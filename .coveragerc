@@ -1,0 +1,24 @@
+[run]
+source = mindmargin
+omit =
+    tests/*
+    mindmargin/db/schema.sql
+    mindmargin/workers/celery_app.py
+    mindmargin/workers/tasks.py
+    mindmargin/api/server.py
+    mindmargin/api/routes.py
+    mindmargin/api/schemas.py
+    _analyze.py
+    auth.py
+    do_auth.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    pass
+    logger\.(debug|info|warning|error|exception)
+    # Type checking blocks
+    if TYPE_CHECKING:

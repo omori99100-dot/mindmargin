@@ -1,0 +1,32 @@
+name: "MindMargin"
+tagline: "Where Psychology Meets Profit"
+primary_color: "#1B2838"
+accent_color: "#D4A843"
+
+fonts:
+  display: "Fraunces"
+  body: "Montserrat"
+  accent: "Bebas Neue"
+
+thumbnail_archetypes:
+  - name: "brain_money"
+    description: "Brain intertwined with dollar signs crumbling"
+  - name: "before_after"
+    description: "Split screen wealth vs ruin"
+  - name: "face_emotion"
+    description: "Extreme close-up shock/ disbelief"
+  - name: "chart_arrow"
+    description: "Steep line graph with dramatic arrow"
+  - name: "empty_power"
+    description: "Vacant boardroom or empty CEO chair"
+
+channel_metadata:
+  description: "Where psychology meets profit. We dissect the biggest business disasters, expose the cognitive biases that drive markets, and show you how the mind makes — and loses — fortunes. New deep dives every week."
+  keywords:
+    - behavioral economics
+    - business autopsies
+    - cognitive biases
+    - stock market psychology
+    - business documentaries
+  country: US
+  primary_language: en

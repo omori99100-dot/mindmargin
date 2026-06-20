@@ -1,0 +1,254 @@
+[
+  {
+    "section": "hook",
+    "section_id": 1,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "Aerial shot of Houston skyline, zooming to Enron building",
+        "style": "cinematic",
+        "camera": "slow push in",
+        "lighting": "golden hour, warm",
+        "duration_seconds": 15,
+        "prompt": "Aerial view Houston Texas skyline 2001, golden hour, cinematic 4K, photorealistic, Enron building center frame",
+        "audio_atmosphere": "low industrial hum",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 2,
+        "description": "Fortune magazine cover 'Most Innovative Company' montage",
+        "style": "archival",
+        "camera": "static with slow zoom",
+        "lighting": "flat, magazine lighting",
+        "duration_seconds": 12,
+        "prompt": "Fortune magazine cover 2001 Enron most innovative company, macro shot, shallow depth of field",
+        "audio_atmosphere": "camera shutter clicks",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 3,
+        "description": "Abstract visualization of $70B turning to zero",
+        "style": "abstract",
+        "camera": "morphing animation",
+        "lighting": "dramatic dark",
+        "duration_seconds": 15,
+        "prompt": "Abstract 3D visualization of dollar bills crumbling to dust, dark background, amber particles floating up, cinematic lighting",
+        "audio_atmosphere": "low rumble with subtle crackle",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 4,
+        "description": "Close-up of brain scan with confidence feedback loop visualization",
+        "style": "data_viz",
+        "camera": "slow push in",
+        "lighting": "blue ambient with glow",
+        "duration_seconds": 18,
+        "prompt": "Neural brain scan with glowing circuit patterns looping back on itself, dark background, blue and amber highlights, scientific visualization style",
+        "audio_atmosphere": "digital hum with heartbeat undertone",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "rise",
+    "section_id": 2,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "Old natural gas pipeline in Texas landscape",
+        "style": "documentary",
+        "camera": "wide, slow pan",
+        "lighting": "natural, overcast",
+        "duration_seconds": 12,
+        "prompt": "Natural gas pipeline stretching across Texas plains, 1980s aesthetic, muted colors, documentary style",
+        "audio_atmosphere": "wind through pipes",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 2,
+        "description": "Jeff Skilling portrait — Harvard MBA era",
+        "style": "archival",
+        "camera": "medium shot, static",
+        "lighting": "studio portrait",
+        "duration_seconds": 8,
+        "prompt": "Jeff Skilling Harvard Business School era portrait, confident smile, professional headshot, 1990s film stock",
+        "audio_atmosphere": "quiet",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 3,
+        "description": "Trading floor — energy contracts being traded",
+        "style": "cinematic",
+        "camera": "dolly through trading floor",
+        "lighting": "fluorescent, busy",
+        "duration_seconds": 15,
+        "prompt": "Busy energy trading floor 1990s, multiple computer screens, traders on phones, chaotic energy, cinematic lighting",
+        "audio_atmosphere": "trading floor noise — phones, chatter, keyboards",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "first_crack",
+    "section_id": 3,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "JEDI logo being formed in shadows",
+        "style": "abstract",
+        "camera": "slow reveal",
+        "lighting": "shadowy, ominous",
+        "duration_seconds": 10,
+        "prompt": "Star Wars JEDI logo forming in shadows, dark corporate aesthetic, green glow, cinematic",
+        "audio_atmosphere": "menacing low tone",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 2,
+        "description": "Andrew Fastow looking uncomfortable",
+        "style": "archival",
+        "camera": "tight close-up",
+        "lighting": "harsh, unflattering",
+        "duration_seconds": 8,
+        "prompt": "Andrew Fastow congressional hearing, uncomfortable expression, harsh lighting, documentary style",
+        "audio_atmosphere": "tense silence",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 3,
+        "description": "Sherron Watkins memo close-up",
+        "style": "documentary",
+        "camera": "macro shot, slow pull back",
+        "lighting": "desk lamp warm",
+        "duration_seconds": 12,
+        "prompt": "Typewritten memo with highlighted text 'I am incredibly nervous that we will implode', desk lamp lighting, macro shot, dramatic",
+        "audio_atmosphere": "typing sounds, paper rustling",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "overconfidence_loop",
+    "section_id": 4,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "Animated overconfidence loop diagram",
+        "style": "data_viz",
+        "camera": "animated infographic",
+        "lighting": "clean, backlit",
+        "duration_seconds": 20,
+        "prompt": "Animated circular diagram showing overconfidence feedback loop: success, attribution, risk, payoff, conviction, denial, clean data visualization style",
+        "audio_atmosphere": "rhythmic pulse matching loop",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "escalation",
+    "section_id": 5,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "Whiteboard with complex partnership structure",
+        "style": "abstract",
+        "camera": "push through maze-like diagram",
+        "lighting": "cold blue",
+        "duration_seconds": 15,
+        "prompt": "Complex organizational chart of shell companies and partnerships, lines connecting Raptor LJM Chewco, confusing maze-like structure, clinical blue lighting",
+        "audio_atmosphere": "confusing layered whispers",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "collapse",
+    "section_id": 6,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "CNBC ticker showing Enron stock crashing",
+        "style": "archival",
+        "camera": "static tight on ticker",
+        "lighting": "TV glow",
+        "duration_seconds": 15,
+        "prompt": "CNBC financial news ticker showing ENRON stock price plummeting from $90 to $0.26, red downward arrows, TV screen glow, 2001 aesthetic",
+        "audio_atmosphere": "news anchor voiceover muffled, ticker sounds",
+        "transition": "crossfade"
+      },
+      {
+        "shot_id": 2,
+        "description": "Empty Enron headquarters atrium",
+        "style": "cinematic",
+        "camera": "slow descending crane shot",
+        "lighting": "cold, empty",
+        "duration_seconds": 15,
+        "prompt": "Empty glass atrium of Enron headquarters, Houston, abandoned feeling, cold blue light filtering through glass, cinematic wide shot",
+        "audio_atmosphere": "echoing silence, single footstep",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "twist",
+    "section_id": 7,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "SEC document close-up with stamp",
+        "style": "documentary",
+        "camera": "macro, slow zoom",
+        "lighting": "fluorescent",
+        "duration_seconds": 12,
+        "prompt": "SEC official document with APPROVED stamp, legal text, shallow depth of field, institutional fluorescent lighting",
+        "audio_atmosphere": "rubber stamp echo",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "lesson",
+    "section_id": 8,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "Three visual panels representing each lesson",
+        "style": "abstract",
+        "camera": "graphic montage",
+        "lighting": "clean, high contrast",
+        "duration_seconds": 30,
+        "prompt": "Three panel infographic: panel 1 confidence vs competence scale, panel 2 transparent flowing information, panel 3 broken feedback loop, clean modern design, amber and navy brand colors",
+        "audio_atmosphere": "resolved, uplifting ambient",
+        "transition": "crossfade"
+      }
+    ]
+  },
+  {
+    "section": "close",
+    "section_id": 9,
+    "shots": [
+      {
+        "shot_id": 1,
+        "description": "MindMargin logo reveal on dark background",
+        "style": "abstract",
+        "camera": "logo animation",
+        "lighting": "amber glow on dark",
+        "duration_seconds": 10,
+        "prompt": "MindMargin logo animation, brain silhouette merging with dollar sign, amber and navy brand colors, clean modern motion graphics, premium feel",
+        "audio_atmosphere": "brand sound logo — three note ascending",
+        "transition": "fade to black"
+      },
+      {
+        "shot_id": 2,
+        "description": "Pulsing question mark on dark background",
+        "style": "abstract",
+        "camera": "static with pulse animation",
+        "lighting": "amber glow",
+        "duration_seconds": 5,
+        "prompt": "Large question mark symbol pulsing slowly on pure black background, warm amber glow, minimalist, suspenseful",
+        "audio_atmosphere": "deep resonant bass note decaying",
+        "transition": "none"
+      }
+    ]
+  }
+]

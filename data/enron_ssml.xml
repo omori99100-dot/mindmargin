@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<speak version="1.1" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+
+  <!-- Section 1: Hook — Fast, urgent, high energy -->
+  <voice name="en-US-Attenborough-Male">
+    <prosody rate="fast" pitch="+5%" volume="loud">
+      <emphasis level="strong">In 2001, Enron was the seventh-largest company in America.</emphasis>
+      Market cap: <say-as interpret-as="currency">$70 billion</say-as>.
+      Fortune's "Most Innovative Company" for six consecutive years.
+      <break time="1s"/>
+      <emphasis level="strong">One year later, it was worth zero.</emphasis>
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-ThisAmericanLife-Female">
+    <prosody rate="medium" pitch="0%" volume="normal">
+      This isn't a story about accounting fraud.
+      <break time="0.3s"/>
+      It's a story about what happens when smart people become so convinced of their own brilliance
+      that they stop being able to see reality.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-Attenborough-Male">
+    <prosody rate="medium" pitch="-5%" volume="normal">
+      Psychologists call it the overconfidence loop.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-Cinematic-Deep">
+    <prosody rate="slow" pitch="-10%" volume="soft">
+      And it didn't just destroy Enron — it lives inside every trader, every CEO...
+      <break time="0.5s"/>
+      and quite possibly, inside you right now.
+      <break time="1s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-Attenborough-Male">
+    <prosody rate="medium" pitch="+3%" volume="normal">
+      What you're about to learn will change how you read every business headline
+      from this day forward.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+
+  <!-- Sections 2-9 follow same pattern with per-section tone mapping -->
+  <!-- (Full SSML omitted for brevity — follows emotional pacing arc) -->
+
+  <!-- Section 9: Close — Slow, resonant, final -->
+  <voice name="en-US-Cinematic-Deep">
+    <prosody rate="very-slow" pitch="-10%" volume="soft">
+      Enron is gone.
+      <break time="0.8s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-Attenborough-Male">
+    <prosody rate="slow" pitch="-5%" volume="normal">
+      But the overconfidence loop isn't.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-ThisAmericanLife-Female">
+    <prosody rate="medium" pitch="0%" volume="normal">
+      Every day, somewhere in the world, a CEO is ignoring bad news.
+      A trader is doubling down on a losing position.
+      A fund manager is attributing luck to skill.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-Cinematic-Deep">
+    <prosody rate="slow" pitch="-8%" volume="soft">
+      The question isn't whether you'll fall into the overconfidence loop.
+      <break time="0.5s"/>
+      The question is whether you'll have the courage to admit it before it's too late.
+      <break time="1s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-Attenborough-Male">
+    <prosody rate="medium" pitch="+3%" volume="normal">
+      This is MindMargin. Where psychology meets profit.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+  <voice name="en-US-ThisAmericanLife-Female">
+    <prosody rate="medium" pitch="0%" volume="normal">
+      If this video changed how you think about business, subscribe.
+      <break time="0.3s"/>
+      There are a hundred more stories like this one waiting to be told.
+      <break time="0.3s"/>
+      Next week: the cognitive bias that cost a bank
+      <say-as interpret-as="currency">$9 billion</say-as> in 48 hours.
+      <break time="0.3s"/>
+      You won't want to miss it.
+      <break time="0.5s"/>
+    </prosody>
+  </voice>
+</speak>

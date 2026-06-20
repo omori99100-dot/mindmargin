@@ -1,0 +1,83 @@
+trend:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.6
+  max_retries: 3
+  timeout: 120
+
+research:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.4
+  max_retries: 3
+  timeout: 180
+
+hook:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.8
+  max_retries: 2
+  timeout: 120
+
+seo:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.5
+  max_retries: 2
+  timeout: 120
+
+script:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.7
+  max_retries: 3
+  timeout: 600
+
+visual:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.8
+  max_retries: 2
+  timeout: 300
+
+thumbnail:
+  enabled: true
+  model: ""
+  temperature: 0.5
+  max_retries: 2
+  timeout: 300
+
+voice:
+  enabled: true
+  model: ""
+  temperature: 0.0
+  max_retries: 2
+  timeout: 600
+
+editing:
+  enabled: true
+  model: ""
+  temperature: 0.0
+  max_retries: 2
+  timeout: 900
+
+upload:
+  enabled: true
+  model: ""
+  temperature: 0.0
+  max_retries: 3
+  timeout: 120
+
+analytics:
+  enabled: true
+  model: ""
+  temperature: 0.0
+  max_retries: 2
+  timeout: 60
+
+learning:
+  enabled: true
+  model: llama3:70b
+  temperature: 0.6
+  max_retries: 2
+  timeout: 120

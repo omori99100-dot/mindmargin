@@ -1,0 +1,29 @@
+# Secrets
+client_secrets.json
+youtube_token.pickle
+flow_state.pickle
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Output / Temp
+output/
+*.log
+.coverage
+data/mindmargin.db
+data/metrics.json
+
+# Environment
+.env.example
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
