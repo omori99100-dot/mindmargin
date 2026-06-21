@@ -15,6 +15,7 @@ __pycache__/
 # Output / Temp
 output/
 *.log
+*.wav
 .coverage
 data/mindmargin.db
 data/metrics.json
