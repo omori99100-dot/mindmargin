@@ -5,16 +5,15 @@ from mindmargin.config import settings
 
 
 def _safe_base() -> Path:
-    """Return an ASCII-only base directory for FFmpeg compatibility."""
     base = Path(settings.storage.output_root)
     try:
         base_str = str(base.resolve())
         base_str.encode("ascii")
-        return base
+        return base.resolve()
     except (UnicodeEncodeError, OSError):
         temp = Path(os.environ.get("TEMP", "C:\\Temp")) / "mindmargin_output"
         temp.mkdir(parents=True, exist_ok=True)
-        return temp
+        return temp.resolve()
 
 
 def sanitize(name: str) -> str:
