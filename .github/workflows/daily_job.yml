@@ -26,7 +26,18 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg piper-tts
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama pull qwen2.5:0.5b &
+          echo "Ollama installed, model pulls in background"
+
+      - name: Create output directories
+        run: |
+          mkdir -p output
+          echo "output/ created"
 
       - name: Restore database cache
         uses: actions/cache/restore@v4
