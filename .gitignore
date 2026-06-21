@@ -29,3 +29,7 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+
+# Temp auth files
+flow_data.json
+flow_state.json

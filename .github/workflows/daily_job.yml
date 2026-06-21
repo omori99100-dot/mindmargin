@@ -28,6 +28,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
 
+      - name: Restore database cache
+        uses: actions/cache/restore@v4
+        id: cache-db
+        with:
+          path: data/mindmargin.db
+          key: mindmargin-db-${{ github.run_id }}
+          restore-keys: |
+            mindmargin-db-
+
       - name: Restore secrets
         run: |
           echo "${{ secrets.YOUTUBE_TOKEN_B64 }}" | base64 -d > youtube_token.pickle
@@ -38,6 +47,13 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: python -m mindmargin.main --run-daily-job
+
+      - name: Save database cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/mindmargin.db
+          key: mindmargin-db-${{ github.run_id }}
 
       - name: Notify on failure
         if: failure()
