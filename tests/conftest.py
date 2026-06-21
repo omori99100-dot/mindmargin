@@ -166,6 +166,7 @@ def _seed_schema(conn: sqlite3.Connection):
             executed_at TEXT DEFAULT (datetime('now'))
         );
     """)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_vc_pipeline_video ON video_classifications(pipeline_id, video_id)")
 
 
 @pytest.fixture

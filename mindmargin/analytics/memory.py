@@ -228,6 +228,9 @@ def _init_schema(conn: sqlite3.Connection):
         );
     """)
 
+    conn.execute("DELETE FROM video_classifications WHERE id NOT IN (SELECT MIN(id) FROM video_classifications GROUP BY pipeline_id, video_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_vc_pipeline_video ON video_classifications(pipeline_id, video_id)")
+
 
 def save_pipeline(pipeline_id: str, topic: str, mode: str = "documentary",
                   word_count: int = 0, video_duration_s: float = 0,
@@ -293,6 +296,44 @@ def save_thumbnails(pipeline_id: str, thumbnails: list[dict]) -> None:
             "VALUES (?, ?, ?, ?)",
             (pipeline_id, t.get("path", ""), t.get("style", ""), t.get("text", "")),
         )
+    conn.commit()
+
+
+def update_hook_title_performance(pipeline_id: str, stats: dict) -> None:
+    """Update hooks and titles tables with actual CTR/retention from analytics.
+
+    Called after analytics collection to close the learning loop.
+    This is an approximation — all hooks for the pipeline get the same
+    actual metrics since we cannot distinguish which hook was seen by each viewer.
+    """
+    conn = _get_db()
+    views = stats.get("views", 0) or 0
+    impressions = stats.get("impressions", 0) or 0
+    ctr_raw = stats.get("ctr", None)
+
+    if ctr_raw is not None:
+        ctr_val = ctr_raw if ctr_raw <= 1 else ctr_raw / 100
+    elif impressions > 0:
+        ctr_val = views / impressions
+    else:
+        ctr_val = 0.0
+
+    avg_view_pct = stats.get("averageViewPercentage", None)
+    if avg_view_pct is not None and avg_view_pct > 0:
+        retention = round(avg_view_pct / 100, 4)
+    else:
+        retention = 0.0
+
+    actual_ctr = round(ctr_val, 4)
+
+    conn.execute(
+        "UPDATE hooks SET actual_ctr=?, actual_retention=?, used=1 WHERE pipeline_id=?",
+        (actual_ctr, retention, pipeline_id),
+    )
+    conn.execute(
+        "UPDATE titles SET ctr=?, views=?, used=1 WHERE pipeline_id=? AND rank=0",
+        (actual_ctr, views, pipeline_id),
+    )
     conn.commit()
 
 
@@ -706,7 +747,7 @@ def save_classification(pipeline_id: str, video_id: str, classification: str,
              ctr, retention, watch_time_s, impressions,
              engagement_rate, velocity, views, age_days)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(rowid) DO UPDATE SET
+        ON CONFLICT(pipeline_id, video_id) DO UPDATE SET
             classification=excluded.classification,
             confidence=excluded.confidence,
             ctr=excluded.ctr, retention=excluded.retention,

@@ -510,7 +510,7 @@ def main():
         return
 
     if args.run_daily_job:
-        import shutil
+        import os, shutil
         from datetime import datetime
         from pathlib import Path
         cutoff = datetime.now().timestamp() - 86400

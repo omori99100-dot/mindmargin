@@ -19,7 +19,10 @@ def collect_analytics(pipeline_id: str, video_id: str) -> dict:
     from the Analytics API when available.
     """
     from mindmargin.integrations.youtube import get_video_stats, get_analytics
-    from mindmargin.analytics.memory import save_analytics, save_classification
+    from mindmargin.analytics.memory import (
+        save_analytics, save_classification,
+        update_hook_title_performance,
+    )
 
     stats = get_video_stats(video_id)
     if stats.get("status") == "completed":
@@ -28,6 +31,7 @@ def collect_analytics(pipeline_id: str, video_id: str) -> dict:
             stats.update({k: v for k, v in advanced["data"].items()
                           if k not in ("status", "video_id", "error")})
         save_analytics(pipeline_id, video_id, stats)
+        update_hook_title_performance(pipeline_id, stats)
         logger.info(f"Analytics collected for {video_id}: {stats.get('views', 0)} views, "
                     f"{stats.get('impressions', 0)} impressions")
     return stats

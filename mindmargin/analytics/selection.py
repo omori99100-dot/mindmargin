@@ -284,7 +284,7 @@ def classify_video(pipeline_id: str, video_id: str, topic: str,
         data_source = "analytics_api"
         logger.info(f"Analytics-driven classify for '{topic}': "
                     f"CTR={ctr_pct:.1f}%, retention={retention:.1%}, "
-                    f"score={metrics_score:.3f} → {classification}")
+                    f"score={metrics_score:.3f} -> {classification}")
 
     # Tier 3: Velocity-only fallback when Analytics API data is unavailable
     elif retention <= 0.01 or not has_analytics_api:
@@ -301,7 +301,7 @@ def classify_video(pipeline_id: str, video_id: str, topic: str,
         else:
             classification = "weak_signal"
             confidence = 0.15
-        logger.info(f"Velocity fallback for '{topic}': vel={velocity:.1f}/hr → {classification}")
+        logger.info(f"Velocity fallback for '{topic}': vel={velocity:.1f}/hr -> {classification}")
 
     # Tier 4: Score-based with derived metrics (has impressions but no analytics API)
     else:
@@ -311,7 +311,7 @@ def classify_video(pipeline_id: str, video_id: str, topic: str,
         data_source = "derived"
         logger.info(f"Derived-score classify for '{topic}': "
                     f"CTR={ctr_pct:.1f}%, retention={retention:.1%}, "
-                    f"score={metrics_score:.3f} → {classification}")
+                    f"score={metrics_score:.3f} -> {classification}")
 
     result = {
         "video_id": video_id,

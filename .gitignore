@@ -2,6 +2,8 @@
 client_secrets.json
 youtube_token.pickle
 flow_state.pickle
+flow_data.json
+flow_state.json
 .env
 
 # Python cache

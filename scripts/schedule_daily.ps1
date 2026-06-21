@@ -5,7 +5,7 @@ param(
 )
 
 $taskName = "MindMargin Daily Job"
-$projectRoot = "C:\Users\A Center\OneDrive\المستندات\mindmargin"
+$projectRoot = "C:\Users\ACENTE~1\OneDrive\AD0F~1\MINDMA~1"
 $pythonExe = "C:\Users\A Center\AppData\Local\Programs\Python\Python311\python.exe"
 
 if ($RunNow) {
