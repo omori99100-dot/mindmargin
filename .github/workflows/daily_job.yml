@@ -43,6 +43,11 @@ jobs:
           echo "${{ secrets.ENV_FILE }}" > .env
           echo "${{ secrets.CLIENT_SECRETS }}" > client_secrets.json
 
+      - name: Seed database with published videos
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/seed_db.py
+
       - name: Run daily job
         env:
           PYTHONIOENCODING: utf-8
