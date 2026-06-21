@@ -2,7 +2,7 @@
 import os, sys, pickle, sqlite3, json, logging
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
