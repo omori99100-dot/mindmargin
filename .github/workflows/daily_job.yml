@@ -26,13 +26,13 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg piper-tts
+          sudo apt-get install -y ffmpeg
 
-      - name: Install Ollama
+      - name: Install Ollama & pull model
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          ollama pull qwen2.5:0.5b &
-          echo "Ollama installed, model pulls in background"
+          ollama pull qwen2.5:0.5b
+          echo "Ollama ready"
 
       - name: Create output directories
         run: |
