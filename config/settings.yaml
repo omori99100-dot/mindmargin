@@ -11,9 +11,9 @@ llm:
   timeout: 120
 
 piper:
-  binary: C:\Users\A Center\AppData\Local\piper\piper\piper.exe
+  binary: C:\Users\A Center\AppData\Local\piper\piper.exe
   voice_model: en_US-lessac-medium
-  model_path: C:\Users\A Center\AppData\Local\piper\piper\voices\en_US-lessac-medium.onnx
+  model_path: C:\Users\A Center\AppData\Local\piper\voices\en_US-lessac-medium\en_US-lessac-medium.onnx
   noise_scale: 0.667
   noise_w: 0.8
   length_scale: 1.0
