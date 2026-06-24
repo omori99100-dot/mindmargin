@@ -18,6 +18,8 @@ output/
 *.wav
 .coverage
 data/mindmargin.db
+data/mindmargin.db-shm
+data/mindmargin.db-wal
 data/metrics.json
 
 # Environment
