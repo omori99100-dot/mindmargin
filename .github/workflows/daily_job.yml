@@ -41,7 +41,7 @@ jobs:
           wget -q "https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz" -O piper.tar.gz
           sudo mkdir -p /usr/local/lib/piper
           sudo tar -xzf piper.tar.gz -C /usr/local/lib/piper
-          sudo ln -sf /usr/local/lib/piper/piper /usr/local/bin/piper
+          sudo ln -sf /usr/local/lib/piper/piper/piper /usr/local/bin/piper
           sudo mkdir -p /usr/local/lib/piper/voices
           sudo chmod 777 /usr/local/lib/piper/voices
           wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx" -O /usr/local/lib/piper/voices/en_US-lessac-medium.onnx
