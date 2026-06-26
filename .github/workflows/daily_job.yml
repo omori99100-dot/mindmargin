@@ -38,18 +38,16 @@ jobs:
 
       - name: Install Piper TTS
         run: |
-          curl -sL https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz -o /tmp/piper.tar.gz
+          wget -q "https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz" -O piper.tar.gz
           sudo mkdir -p /usr/local/lib/piper
-          sudo tar -xzf /tmp/piper.tar.gz -C /usr/local/lib/piper
+          sudo tar -xzf piper.tar.gz -C /usr/local/lib/piper
           sudo ln -sf /usr/local/lib/piper/piper /usr/local/bin/piper
           sudo mkdir -p /usr/local/lib/piper/voices
-          curl -sL https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx \
-            -o /usr/local/lib/piper/voices/en_US-lessac-medium.onnx
-          curl -sL https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json \
-            -o /usr/local/lib/piper/voices/en_US-lessac-medium.onnx.json
+          wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx" -O /usr/local/lib/piper/voices/en_US-lessac-medium.onnx
+          wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" -O /usr/local/lib/piper/voices/en_US-lessac-medium.onnx.json
           sed -i 's|binary: .*|binary: /usr/local/bin/piper|' config/settings.yaml
           sed -i 's|model_path: .*|model_path: /usr/local/lib/piper/voices/en_US-lessac-medium.onnx|' config/settings.yaml
-          echo "Piper ready"
+          piper --version && echo "Piper ready"
 
       - name: Create output directories
         run: |
