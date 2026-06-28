@@ -2,7 +2,7 @@ name: MindMargin Daily Job
 
 on:
   schedule:
-    - cron: '0 23 * * *'
+    - cron: '0 21 * * *'
   workflow_dispatch:
 
 jobs:
