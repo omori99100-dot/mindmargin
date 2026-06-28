@@ -362,7 +362,11 @@ def execute_top_decision(quick: bool = False, privacy: str = "private",
     logger.info(f"Selected topic: '{topic}'")
 
     # Confidence gate: skip if brain decision confidence is too low
-    if decision_confidence < MIN_CONFIDENCE:
+    # Bypass when the autonomous system has never completed a pipeline (bootstrap)
+    from mindmargin.analytics.memory import get_execution_log
+    if not get_execution_log(limit=1):
+        logger.info("Confidence gate bypassed: no execution history (bootstrap mode)")
+    elif decision_confidence < MIN_CONFIDENCE:
         logger.warning(
             f"Confidence gate: decision confidence {decision_confidence:.2f} < "
             f"{MIN_CONFIDENCE:.2f}. Skipping execution."
