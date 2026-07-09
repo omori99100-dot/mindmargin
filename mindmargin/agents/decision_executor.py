@@ -277,8 +277,10 @@ def log_execution(pipeline_id: str, topic: str,
 def _check_circuit_breaker() -> bool:
     """Check if the circuit breaker is tripped (MAX_CONSECUTIVE_FAILURES reached).
 
-    Reads the last N execution logs. If all N are failures, trips the breaker
-    to prevent infinite publish loops, quota burn, and corrupted uploads.
+    Reads the last N execution logs. Only counts PIPELINE crashes as failures
+    (pipeline_status != 'completed').  Blocked publishes (safety gate blocks)
+    and transient upload API errors do NOT trip the breaker — they are expected
+    to resolve on the next scheduled run.
 
     Returns True if the executor should block (circuit open).
     """
@@ -290,23 +292,23 @@ def _check_circuit_breaker() -> bool:
     if len(logs) < MAX_CONSECUTIVE_FAILURES:
         return False
 
-    if all(
-        l.get("pipeline_status") != "completed"
-        or l.get("error", "")
-        for l in logs
-    ):
+    # Only pipeline crashes count — gate blocks and upload errors do not
+    if all(l.get("pipeline_status") != "completed" for l in logs):
         _CIRCUIT_BREAKER_TRIPPED = True
         logger.critical(
             f"CIRCUIT BREAKER TRIPPED: {MAX_CONSECUTIVE_FAILURES} consecutive "
             f"pipeline failures detected. Decision executor disabled."
         )
+        lasterr = logs[0].get("error", "unknown")
+        lasts = logs[0].get("pipeline_status", "?")
+        logger.critical(f"  Last: status={lasts} error={lasterr!r} topic={logs[0].get('topic', '')!r}")
         try:
             from mindmargin.analytics.monitoring import record_event
             record_event(
                 category="executor",
                 label="circuit_breaker_tripped",
-                metadata={"reason": f"{MAX_CONSECUTIVE_FAILURES} consecutive failures",
-                          "last_error": logs[0].get("error", "unknown"),
+                metadata={"reason": f"{MAX_CONSECUTIVE_FAILURES} consecutive pipeline crashes",
+                          "last_error": lasterr,
                           "last_topic": logs[0].get("topic", "")},
             )
         except Exception:
@@ -576,7 +578,8 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
     log_error = "" if pub_video_id else (
         "pipeline failed" if pipeline_status != "completed" else
         "publish skipped (auto_publish=False)" if not auto_publish else
-        cycle["steps"].get("publish", {}).get("reason", "publish blocked or failed")
+        cycle["steps"].get("publish", {}).get("reason")
+        or cycle["steps"].get("publish", {}).get("error", "publish blocked or failed")
     )
     logger.info(
         f"Logging execution: pipeline_id={pipeline_id} topic={topic!r} "
