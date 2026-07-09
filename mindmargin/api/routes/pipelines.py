@@ -1,18 +1,17 @@
-import logging
 from fastapi import APIRouter, HTTPException
 
 from mindmargin.api.schemas import PipelineRequest, PipelineResponse
 from mindmargin.core.pipeline import Pipeline
 
-logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["Pipelines"])
 
 _active: dict[str, Pipeline] = {}
 
 
 @router.post("/pipeline", response_model=PipelineResponse)
 def start_pipeline(req: PipelineRequest):
-    pipe = Pipeline(topic=req.topic)
+    scale = 0.1 if req.quick else 1.0
+    pipe = Pipeline(topic=req.topic, duration_scale=scale, mode=req.mode)
     _active[pipe.pipeline_id] = pipe
     result = pipe.run()
     resp = PipelineResponse(
@@ -22,6 +21,8 @@ def start_pipeline(req: PipelineRequest):
         completed_agents=result["completed_agents"],
         errors=result["errors"],
         output_dir=result.get("output_dir", ""),
+        timing_s=result.get("timing_s"),
+        video_path=result.get("video_path", ""),
         message="Pipeline completed" if result["status"] == "completed" else "Pipeline failed",
     )
     if result["status"] == "failed":
@@ -30,9 +31,20 @@ def start_pipeline(req: PipelineRequest):
 
 
 @router.get("/pipeline/{pipeline_id}", response_model=PipelineResponse)
-def get_status(pipeline_id: str):
+def get_pipeline_status(pipeline_id: str):
     pipe = _active.get(pipeline_id)
     if not pipe:
+        from mindmargin.analytics.memory import get_pipeline_history
+        history = get_pipeline_history(200)
+        for p in history:
+            if p.get("id") == pipeline_id:
+                return PipelineResponse(
+                    pipeline_id=p["id"],
+                    topic=p["topic"],
+                    status=p.get("status", "completed"),
+                    output_dir="",
+                    message="Loaded from history",
+                )
         raise HTTPException(status_code=404, detail="Pipeline not found")
     return PipelineResponse(
         pipeline_id=pipe.pipeline_id,
@@ -46,4 +58,14 @@ def get_status(pipeline_id: str):
 
 @router.get("/pipelines")
 def list_pipelines():
-    return {"pipelines": list(_active.keys())}
+    from mindmargin.analytics.memory import get_pipeline_history
+    history = get_pipeline_history(50)
+    return {
+        "active": list(_active.keys()),
+        "historical": [
+            {"id": p["id"], "topic": p["topic"], "status": p.get("status", ""),
+             "created_at": p.get("created_at", ""),
+             "youtube_video_id": p.get("youtube_video_id", "")}
+            for p in history
+        ],
+    }

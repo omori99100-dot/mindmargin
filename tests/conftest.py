@@ -247,6 +247,6 @@ def mock_youtube_auth(monkeypatch):
     """Mock YouTube authentication to prevent real OAuth flow."""
     def _mock_service(*args, **kwargs):
         return None
-    import mindmargin.integrations.youtube as yt_mod
-    monkeypatch.setattr(yt_mod, "_get_authenticated_service", _mock_service)
-    monkeypatch.setattr(yt_mod, "_get_analytics_service", lambda: None)
+    import mindmargin.integrations.youtube.client as yt_client
+    monkeypatch.setattr(yt_client, "_get_authenticated_service", _mock_service)
+    monkeypatch.setattr(yt_client, "_get_analytics_service", lambda: None)

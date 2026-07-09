@@ -61,12 +61,12 @@ class ThumbnailAgent:
         thumb_dir = dirs["thumbnails"]
         thumb_dir.mkdir(parents=True, exist_ok=True)
 
-        titles = script_data.get("titles", [script_data.get("best_title", topic)])
-        primary_text = script_data.get("seo", {}).get("thumbnail_text", "")
+        best_title = script_data.get("best_title", topic)
+        titles = script_data.get("titles", [best_title])
         variants = []
 
-        # Primary text from SEO or best title
-        base_text = primary_text or titles[0] if titles else topic
+        # Use best_title as primary text — ensures topic consistency
+        base_text = best_title
 
         for style_name, style in THUMBNAIL_STYLES.items():
             try:
@@ -82,8 +82,10 @@ class ThumbnailAgent:
             except Exception as e:
                 logger.warning(f"Thumbnail variant {style_name} failed: {e}")
 
-        # Also generate title-based variants (first 3 titles)
+        # Generate title-based variants using actual titles from script (first 3)
         for i, title in enumerate(titles[:3]):
+            if title == base_text:
+                continue  # skip duplicate of primary
             for style_name in ["minimal", "contrast_split"]:
                 style = THUMBNAIL_STYLES[style_name]
                 try:
@@ -99,6 +101,16 @@ class ThumbnailAgent:
                 except Exception as e:
                     logger.warning(f"Thumbnail title variant {i} failed: {e}")
 
+        # Score and rank variants using thumbnail_concepts if available
+        thumbnail_concepts = script_data.get("thumbnail_concepts", [])
+        if thumbnail_concepts:
+            best_concept = max(
+                thumbnail_concepts,
+                key=lambda c: (c.get("emotion_score", 0) + c.get("curiosity_score", 0)) / 2
+            )
+            logger.info(f"Best thumbnail concept: emotion={best_concept.get('emotion_score')}, "
+                       f"curiosity={best_concept.get('curiosity_score')}")
+
         manifest = {
             "topic": topic,
             "pipeline_id": pipeline_id,
@@ -111,7 +123,7 @@ class ThumbnailAgent:
         write_text(thumb_dir / "thumbnail_manifest.json",
                    json.dumps(manifest, indent=2))
 
-        logger.info(f"ThumbnailAgent: generated {len(variants)} variants")
+        logger.info(f"ThumbnailAgent: generated {len(variants)} variants, primary text: '{base_text[:50]}'")
         return {
             "agent": self.name,
             "status": "completed" if variants else "failed",

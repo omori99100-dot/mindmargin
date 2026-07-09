@@ -14,6 +14,14 @@ class LLMSettings(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 4096
     timeout: int = 120
+    routing_policy: str = "default"
+    default_provider: str = "ollama"
+    ollama_model: str = ""
+    openai_model: str = "gpt-4o-mini"
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
+    gemini_model: str = "gemini-1.5-flash"
+    openai_base_url: str = ""
+    anthropic_base_url: str = ""
 
 
 class PiperSettings(BaseModel):
@@ -49,6 +57,20 @@ class YouTubeSettings(BaseModel):
     upload_retries: int = 3
 
 
+class ProductionSettings(BaseModel):
+    max_parallel_jobs: int = 4
+    max_parallel_sections: int = 4
+    enable_background_jobs: bool = True
+    enable_structured_logs: bool = True
+    enable_cache_hash: bool = True
+    enable_health_reports: bool = True
+    enable_auto_resume: bool = True
+    enable_duplicate_detection: bool = True
+    default_encoder: str = ""
+    job_poll_interval: float = 1.0
+    allowed_origins: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     environment: str = Field(default="development")
     log_level: str = Field(default="INFO")
@@ -62,6 +84,7 @@ class Settings(BaseModel):
     video: VideoSettings = VideoSettings()
     storage: StorageSettings = StorageSettings()
     youtube: YouTubeSettings = YouTubeSettings()
+    production: ProductionSettings = ProductionSettings()
 
     class Config:
         arbitrary_types_allowed = True

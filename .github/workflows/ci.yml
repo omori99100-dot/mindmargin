@@ -1,0 +1,99 @@
+name: MindMargin CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-timeout
+
+      - name: Run tests
+        run: python -m pytest tests/ -q --tb=short --timeout=60
+        env:
+          ENVIRONMENT: test
+
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check imports
+        run: python -c "import mindmargin; print('Import OK')"
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f deploy/docker/Dockerfile.api -t mindmargin-api:test .
+
+      - name: Build Worker image
+        run: docker build -f deploy/docker/Dockerfile.worker -t mindmargin-worker:test .
+
+      - name: Build CLI image
+        run: docker build -f deploy/docker/Dockerfile.cli -t mindmargin-cli:test .
+
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start services
+        run: docker compose -f deploy/docker/docker-compose.yml up -d
+        env:
+          ENVIRONMENT: test
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && break
+            sleep 2
+          done
+
+      - name: Health check
+        run: curl -sf http://localhost:8000/health | python -m json.tool
+
+      - name: Stop services
+        if: always()
+        run: docker compose -f deploy/docker/docker-compose.yml down

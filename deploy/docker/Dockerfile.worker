@@ -1,12 +1,28 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg curl && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+FROM base AS deps
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+FROM deps AS runtime
+
 COPY . .
 
-CMD ["celery", "-A", "mindmargin.workers.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+RUN useradd -m -u 1000 mindmargin && \
+    chown -R mindmargin:mindmargin /app && \
+    mkdir -p /app/output /app/data && \
+    chown -R mindmargin:mindmargin /app/output /app/data
+
+USER mindmargin
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import redis; r=redis.Redis.from_url('${REDIS_URL:-redis://localhost:6379/0}'); r.ping()" || exit 1
+
+CMD ["python", "-m", "mindmargin.main", "--run-daily-job"]

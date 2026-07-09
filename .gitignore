@@ -36,3 +36,12 @@ Thumbs.db
 # Temp auth files
 flow_data.json
 flow_state.json
+
+# Coverage artifacts (from coverage.py --context-lines)
+*,cover
+
+# Debug / validation scripts
+_check_state.py
+validate_final.py
+validate_phase21.py
+PH21_3_PRODUCTION_VALIDATOR.py

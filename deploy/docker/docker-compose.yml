@@ -7,6 +7,19 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
     restart: unless-stopped
 
   api:
@@ -18,12 +31,18 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://ollama:11434
-      ENVIRONMENT: production
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+      DEBUG: "true"
     volumes:
       - ../../output:/app/output
+      - ../../data:/app/data
       - ../../config:/app/config
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     restart: unless-stopped
 
   worker:
@@ -33,20 +52,17 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://ollama:11434
-      ENVIRONMENT: production
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
     volumes:
       - ../../output:/app/output
+      - ../../data:/app/data
       - ../../config:/app/config
     depends_on:
-      - redis
-    restart: unless-stopped
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

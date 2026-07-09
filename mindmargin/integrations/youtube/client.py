@@ -1,4 +1,9 @@
-"""YouTube Data API v3 client: OAuth, uploads, metadata, analytics."""
+"""YouTube Data API v3 client: OAuth, uploads, metadata, analytics.
+
+This module wraps the flat youtube API functions into a YouTubeClient class
+for use by youtube/connector.py. All existing function-level imports are
+re-exported via youtube/__init__.py for backward compatibility.
+"""
 
 import json
 import logging
@@ -202,13 +207,20 @@ def upload_video(
     title: str = "MindMargin Video",
     description: str = "",
     tags: Optional[list[str]] = None,
-    category_id: str = "27",  # Education
+    category_id: str = "27",
     privacy_status: str = "private",
     playlist_id: Optional[str] = None,
     thumbnail_path: Optional[str] = None,
     publish_at: Optional[str] = None,
+    max_retries: int = 3,
 ) -> dict:
-    """Upload a video to YouTube. Returns response dict with video_id, status, etc."""
+    """Upload a video to YouTube with exponential backoff retry.
+
+    Retries on transient errors (network, 5xx, quota temporary).
+    Does NOT retry on auth errors (401, 403) or invalid requests (400).
+
+    Returns response dict with video_id, status, etc.
+    """
     yt = _get_authenticated_service()
     if not yt:
         return {"status": "failed", "error": "YouTube service not available"}
@@ -231,45 +243,84 @@ def upload_video(
     if publish_at:
         body["status"]["publishAt"] = publish_at
 
-    try:
-        from googleapiclient.http import MediaFileUpload
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            from googleapiclient.http import MediaFileUpload
+            from googleapiclient.errors import HttpError
 
-        media = MediaFileUpload(video_path, chunksize=1024 * 1024, resumable=True)
-        request = yt.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=media,
-        )
-        logger.info(f"Uploading: {title} ({privacy_status})")
-        response = None
-        while response is None:
-            status, response = request.next_chunk()
-            if status:
-                pct = int(status.progress() * 100)
-                logger.info(f"Upload progress: {pct}%")
+            media = MediaFileUpload(video_path, chunksize=1024 * 1024, resumable=True)
+            request = yt.videos().insert(
+                part="snippet,status",
+                body=body,
+                media_body=media,
+            )
+            logger.info(f"Uploading: {title} ({privacy_status}) [attempt {attempt}/{max_retries}]")
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    pct = int(status.progress() * 100)
+                    logger.info(f"Upload progress: {pct}%")
 
-        video_id = response.get("id", "")
-        logger.info(f"Upload complete: https://youtu.be/{video_id}")
+            video_id = response.get("id", "")
+            logger.info(f"Upload complete: https://youtu.be/{video_id}")
 
-        # Upload thumbnail
-        if thumbnail_path and os.path.isfile(thumbnail_path):
-            _upload_thumbnail(yt, video_id, thumbnail_path)
+            if thumbnail_path and os.path.isfile(thumbnail_path):
+                _upload_thumbnail(yt, video_id, thumbnail_path)
 
-        # Add to playlist
-        if playlist_id:
-            _add_to_playlist(yt, video_id, playlist_id)
+            if playlist_id:
+                _add_to_playlist(yt, video_id, playlist_id)
 
-        return {
-            "status": "completed",
-            "video_id": video_id,
-            "url": f"https://youtu.be/{video_id}",
-            "title": title,
-            "privacy_status": privacy_status,
-        }
+            return {
+                "status": "completed",
+                "video_id": video_id,
+                "url": f"https://youtu.be/{video_id}",
+                "title": title,
+                "privacy_status": privacy_status,
+            }
 
-    except Exception as e:
-        logger.error(f"YouTube upload failed: {e}")
-        return {"status": "failed", "error": str(e)}
+        except HttpError as e:
+            last_error = e
+            status_code = e.resp.status if hasattr(e, 'resp') else 0
+            error_reason = ""
+            try:
+                error_content = json.loads(e.content.decode())
+                error_reason = error_content.get("error", {}).get("message", str(e))
+            except Exception:
+                error_reason = str(e)
+
+            # Do NOT retry on auth or client errors
+            if status_code in (400, 401, 403):
+                logger.error(f"YouTube upload failed (HTTP {status_code}): {error_reason}")
+                return {"status": "failed", "error": f"HTTP {status_code}: {error_reason}"}
+
+            # Retry on 5xx, 429 (quota), or network errors
+            if attempt < max_retries:
+                delay = min(2 ** attempt + random.uniform(0, 1), 60)
+                logger.warning(
+                    f"Upload attempt {attempt} failed (HTTP {status_code}): {error_reason}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+            else:
+                logger.error(f"YouTube upload failed after {max_retries} attempts: {error_reason}")
+                return {"status": "failed", "error": f"HTTP {status_code}: {error_reason}"}
+
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                delay = min(2 ** attempt + random.uniform(0, 1), 60)
+                logger.warning(
+                    f"Upload attempt {attempt} failed: {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+            else:
+                logger.error(f"YouTube upload failed after {max_retries} attempts: {e}")
+                return {"status": "failed", "error": str(e)}
+
+    return {"status": "failed", "error": str(last_error) or "upload failed after retries"}
 
 
 def _upload_thumbnail(yt, video_id: str, thumbnail_path: str):
@@ -303,7 +354,6 @@ def _add_to_playlist(yt, video_id: str, playlist_id: str):
 
 
 def _fetch_existing_metadata(video_id: str) -> dict:
-    """Fetch current snippet and status for a video."""
     yt = _get_authenticated_service()
     if not yt:
         return {}
@@ -325,12 +375,6 @@ def update_video_metadata(
     category_id: Optional[str] = None,
     privacy_status: Optional[str] = None,
 ) -> dict:
-    """Update existing video metadata.
-
-    When updating snippet fields (title/description/tags), the existing
-    category_id is preserved if not explicitly provided — YouTube requires
-    a valid categoryId whenever the snippet part is updated.
-    """
     yt = _get_authenticated_service()
     if not yt:
         return {"status": "failed", "error": "YouTube service not available"}
@@ -340,13 +384,10 @@ def update_video_metadata(
         if has_snippet:
             existing = _fetch_existing_metadata(video_id) if (title is None or category_id is None) else {}
             existing_snippet = existing.get("snippet", {}) if existing else {}
-            # Fetch existing title if not explicitly provided
             if title is None:
                 title = existing_snippet.get("title", "")
-            # Fetch existing category_id if not explicitly provided
             if category_id is None:
                 category_id = existing_snippet.get("categoryId", "27")
-            # Fetch existing tags if not explicitly provided
             if tags is None:
                 tags = existing_snippet.get("tags", [])
 
@@ -374,13 +415,6 @@ def update_video_metadata(
 
 
 def get_video_stats(video_id: str) -> dict:
-    """Get public stats for a video: views, likes, comments, impressions.
-
-    YouTube Data API v3 (statistics part) does not expose impressions or
-    averageViewDuration.  We fetch those from the Analytics API when available
-    (see get_analytics()), and fall back to a conservative estimate so the
-    evolution system can function even without Analytics API access.
-    """
     yt = _get_authenticated_service()
     if not yt:
         return {"status": "failed", "error": "Not authenticated"}
@@ -406,14 +440,7 @@ def get_video_stats(video_id: str) -> dict:
             "title": snippet.get("title", ""),
         }
 
-        # Estimate impressions — YouTube Data API v3 statistics part does not
-        # expose this field.  We use a conservative heuristic so the evolution
-        # system can function without Analytics API access.
-        # Real impressions from Analytics API are fetched separately by
-        # _fetch_video_analytics() in the A/B rotation cycle.
         if views > 0:
-            # Typical CTR is 5-15%, so impressions ≈ 7-20x views.
-            # We use a conservative 3x to avoid over-estimating.
             result["impressions"] = max(views * 3, 100)
         else:
             result["impressions"] = 0
@@ -429,7 +456,6 @@ def get_analytics(
     end_date: Optional[str] = None,
     metrics: Optional[list[str]] = None,
 ) -> dict:
-    """Get YouTube Analytics for a video. Requires analytics API access."""
     from datetime import datetime, timedelta
     if start_date is None:
         start_date = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -438,7 +464,6 @@ def get_analytics(
     service = _get_analytics_service()
     if not service:
         logger.warning("Analytics API not available")
-        # Fall back to public stats
         return get_video_stats(video_id)
 
     if metrics is None:
@@ -477,7 +502,6 @@ def get_analytics(
 
 
 def list_playlists() -> list[dict]:
-    """List all playlists for the authenticated channel."""
     yt = _get_authenticated_service()
     if not yt:
         return []
@@ -501,7 +525,6 @@ def list_playlists() -> list[dict]:
 
 def create_playlist(title: str, description: str = "",
                     privacy_status: str = "private") -> Optional[str]:
-    """Create a new playlist. Returns playlist ID."""
     yt = _get_authenticated_service()
     if not yt:
         return None
@@ -522,7 +545,6 @@ def create_playlist(title: str, description: str = "",
 
 
 def post_comment(video_id: str, text: str) -> Optional[str]:
-    """Post a comment on a video. Returns thread ID on success, None on failure."""
     yt = _get_authenticated_service()
     if not yt:
         return None
@@ -547,11 +569,6 @@ def post_comment(video_id: str, text: str) -> Optional[str]:
 
 
 def pin_comment(thread_id: str, video_id: str, text: str) -> bool:
-    """Pin an existing comment thread as the top comment.
-
-    Note: commentThreads().update() requires google-api-python-client >= 2.0.
-    If unavailable, the comment is still posted (just unpinned).
-    """
     yt = _get_authenticated_service()
     if not yt:
         return False
@@ -577,9 +594,67 @@ def pin_comment(thread_id: str, video_id: str, text: str) -> bool:
 
 
 def post_and_pin_comment(video_id: str, text: str) -> bool:
-    """Post a comment (attempt pin, fall back to unpinned)."""
     thread_id = post_comment(video_id, text)
     if not thread_id:
         return False
-    pin_comment(thread_id, video_id, text)  # best-effort pin
+    pin_comment(thread_id, video_id, text)
     return True
+
+
+class YouTubeClient:
+    """OOP wrapper around YouTube API functions for use by youtube/connector.py."""
+
+    def __init__(self):
+        pass
+
+    def check_auth(self) -> bool:
+        result = check_credentials()
+        return result.get("authenticated", False)
+
+    def upload(self, file_path: str, title: str, description: str = "",
+               tags: list[str] = None, category_id: str = "27",
+               privacy: str = "private") -> dict:
+        return upload_video(
+            video_path=file_path,
+            title=title,
+            description=description,
+            tags=tags,
+            category_id=category_id,
+            privacy_status=privacy,
+        )
+
+    def add_to_playlist(self, video_id: str, playlist_id: str) -> bool:
+        yt = _get_authenticated_service()
+        if not yt:
+            return False
+        try:
+            _add_to_playlist(yt, video_id, playlist_id)
+            return True
+        except Exception:
+            return False
+
+    def set_thumbnail(self, video_id: str, thumbnail_path: str) -> bool:
+        yt = _get_authenticated_service()
+        if not yt:
+            return False
+        try:
+            _upload_thumbnail(yt, video_id, thumbnail_path)
+            return True
+        except Exception:
+            return False
+
+    def update_metadata(self, video_id: str, title: str = "",
+                        description: str = "", tags: list[str] = None) -> dict:
+        return update_video_metadata(video_id, title, description, tags)
+
+    def list_playlists(self) -> list[dict]:
+        return list_playlists()
+
+    def get_video_stats(self, video_id: str) -> dict:
+        return get_video_stats(video_id)
+
+    def post_comment(self, video_id: str, text: str) -> dict:
+        thread_id = post_comment(video_id, text)
+        if thread_id:
+            return {"status": "completed", "thread_id": thread_id}
+        return {"status": "failed", "error": "Comment post failed"}

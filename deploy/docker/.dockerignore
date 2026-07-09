@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+*.pyc
+__pycache__
+.pytest_cache
+.mypy_cache
+output/
+data/
+*.db
+*.pickle
+*.onnx
+*.onnx.json
+.venv/
+node_modules/
+*.log

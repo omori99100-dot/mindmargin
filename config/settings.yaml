@@ -41,3 +41,15 @@ youtube:
 
 redis_url: "redis://localhost:6379/0"
 database_url: ""
+
+production:
+  max_parallel_jobs: 4
+  max_parallel_sections: 4
+  enable_background_jobs: true
+  enable_structured_logs: true
+  enable_cache_hash: true
+  enable_health_reports: true
+  enable_auto_resume: true
+  enable_duplicate_detection: true
+  default_encoder: ""
+  job_poll_interval: 1.0

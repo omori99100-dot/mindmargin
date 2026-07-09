@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,6 @@ def _find_ffmpeg() -> list[str]:
 
 
 def _verify_encoder(ffmpeg: str, encoder: str) -> bool:
-    """Verify a hardware encoder actually works by encoding a short test clip."""
     import tempfile, uuid
     test_path = os.path.join(tempfile.gettempdir(), f"enc_test_{uuid.uuid4().hex[:8]}.mp4")
     try:
@@ -47,50 +47,79 @@ def _verify_encoder(ffmpeg: str, encoder: str) -> bool:
             pass
 
 
-def detect_best_encoder() -> str:
-    """Detect the best available hardware-accelerated H.264 encoder.
+def _benchmark_encoder(ffmpeg: str, encoder: str, label: str) -> Optional[tuple[str, str, float]]:
+    """Benchmark encoder with a 5-second 1080p render, return (encoder, label, fps)."""
+    import tempfile, uuid
+    test_path = os.path.join(tempfile.gettempdir(), f"enc_bench_{uuid.uuid4().hex[:8]}.mp4")
+    try:
+        cmd = [ffmpeg, "-y", "-f", "lavfi", "-i",
+               f"color=c=blue:s=1920x1080:d=5:r=30",
+               "-c:v", encoder, "-pix_fmt", "yuv420p", test_path]
+        start = time.time()
+        proc = subprocess.run(cmd, capture_output=True, timeout=60)
+        elapsed = time.time() - start
+        if proc.returncode == 0 and os.path.isfile(test_path) and os.path.getsize(test_path) > 0:
+            fps = (5 * 30) / elapsed  # frames / seconds
+            logger.debug(f"Encoder benchmark: {encoder} ({label}) = {fps:.1f} fps ({elapsed:.2f}s)")
+            return (encoder, label, fps)
+        return None
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        return None
+    finally:
+        try:
+            if os.path.isfile(test_path):
+                os.remove(test_path)
+        except Exception:
+            pass
 
-    Tries NVENC → AMF → QSV → libx264 fallback.
-    Each HW encoder is verified with a short test encode before selection.
-    Result is cached after first detection.
-    """
+
+def detect_best_encoder() -> str:
     global _BEST_ENCODER_CACHE
     if _BEST_ENCODER_CACHE:
         return _BEST_ENCODER_CACHE
 
     ffmpeg = _find_ffmpeg()[0]
     candidates = []
+    bench_results: list[tuple[str, str, float]] = []
 
     try:
-        # Get list of available encoders
         proc = subprocess.run(
             [ffmpeg, "-hide_banner", "-encoders"],
             capture_output=True, timeout=15, text=True,
         )
         available = proc.stdout + proc.stderr
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        available = ""
 
-        # Check for NVIDIA NVENC
-        if "h264_nvenc" in available:
+    encoder_priorities = [
+        ("av1_nvenc", "AV1 NVENC"),
+        ("h264_nvenc", "NVIDIA NVENC"),
+        ("av1_qsv", "Intel AV1 QSV"),
+        ("h264_qsv", "Intel QSV"),
+        ("h264_amf", "AMD AMF"),
+    ]
+
+    for enc_name, label in encoder_priorities:
+        if enc_name in available:
             try:
-                subprocess.run(["nvidia-smi"], capture_output=True, timeout=5)
-                if _verify_encoder(ffmpeg, "h264_nvenc"):
-                    candidates.append(("h264_nvenc", "NVIDIA NVENC"))
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+                if not _verify_encoder(ffmpeg, enc_name):
+                    continue
+                bench = _benchmark_encoder(ffmpeg, enc_name, label)
+                if bench:
+                    bench_results.append(bench)
+                    candidates.append((enc_name, label))
+                    logger.info(f"Encoder available: {label} ({enc_name}) — {bench[2]:.1f} fps")
+                elif _verify_encoder(ffmpeg, enc_name):
+                    candidates.append((enc_name, label))
+                    logger.info(f"Encoder available: {label} ({enc_name}) — verified")
+            except Exception:
                 pass
 
-        # Check for AMD AMF
-        if "h264_amf" in available:
-            if _verify_encoder(ffmpeg, "h264_amf"):
-                candidates.append(("h264_amf", "AMD AMF"))
-
-        # Check for Intel QSV
-        if "h264_qsv" in available:
-            if _verify_encoder(ffmpeg, "h264_qsv"):
-                candidates.append(("h264_qsv", "Intel QSV"))
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-        pass
-
-    if candidates:
+    if bench_results:
+        bench_results.sort(key=lambda x: x[2], reverse=True)
+        encoder, name, fps = bench_results[0]
+        logger.info(f"FFmpeg encoder: {name} ({encoder}) @ {fps:.1f} fps (benchmarked)")
+    elif candidates:
         encoder, name = candidates[0]
         logger.info(f"FFmpeg encoder: {name} ({encoder})")
     else:
@@ -100,7 +129,6 @@ def detect_best_encoder() -> str:
 
     _BEST_ENCODER_CACHE = encoder
 
-    # Log selection to monitoring metrics
     try:
         from mindmargin.analytics.monitoring import record_event
         record_event("encoder_selection", encoder, 1,
@@ -121,27 +149,43 @@ def ffmpeg_available() -> bool:
 
 
 def run(cmd: list[str], desc: str = "", timeout: int = 3600,
-        cwd: str | None = None) -> bool:
-    ffmpeg = _find_ffmpeg()[0]
-    if not os.path.isfile(ffmpeg) and ffmpeg == "ffmpeg":
+        cwd: str | None = None, retries: int = 2) -> tuple[bool, str]:
+    """Run FFmpeg with automatic retry and configurable timeout.
+    
+    Returns (ok: bool, error: str).
+    """
+    ffmpeg_exe = _find_ffmpeg()[0]
+    if not os.path.isfile(ffmpeg_exe) and ffmpeg_exe == "ffmpeg":
         if not ffmpeg_available():
-            logger.error("FFmpeg not found on PATH")
-            return False
-    cmd[0] = ffmpeg
-    try:
-        logger.info(f"FFmpeg: {desc or ' '.join(cmd[-3:])}")
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=cwd)
-        if proc.returncode != 0:
+            return False, "FFmpeg not found on PATH"
+
+    cmd[0] = ffmpeg_exe
+    last_error = ""
+
+    for attempt in range(1 + retries):
+        try:
+            logger.info(f"FFmpeg: {desc or ' '.join(cmd[-3:])}"
+                        f"{' (attempt ' + str(attempt + 1) + ')' if retries else ''}")
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=cwd)
+            if proc.returncode == 0:
+                return True, ""
             stderr = proc.stderr.decode("utf-8", errors="replace").strip()[-500:]
-            logger.error(f"FFmpeg failed (rc={proc.returncode}): {stderr}")
-            return False
-        return True
-    except subprocess.TimeoutExpired:
-        logger.error(f"FFmpeg timed out after {timeout}s")
-        return False
-    except Exception as e:
-        logger.error(f"FFmpeg error: {e}")
-        return False
+            last_error = f"FFmpeg failed (rc={proc.returncode}): {stderr}"
+            logger.warning(last_error)
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+        except subprocess.TimeoutExpired:
+            last_error = f"FFmpeg timed out after {timeout}s"
+            logger.error(last_error)
+            return False, last_error
+        except Exception as e:
+            last_error = f"FFmpeg error: {e}"
+            logger.error(last_error)
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+
+    logger.error(last_error)
+    return False, last_error
 
 
 def _find_ffprobe() -> str:
@@ -167,13 +211,17 @@ def probe_duration(path: str | Path) -> float:
 
 
 def _video_encoder_params() -> list[str]:
-    """Return video codec parameters using the best available encoder."""
     encoder = detect_best_encoder()
     if encoder == "libx264":
         return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", str(settings.video.crf)]
     elif encoder == "h264_nvenc":
         return ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", str(settings.video.crf),
                 "-rc", "vbr", "-b:v", "5M", "-maxrate", "10M"]
+    elif encoder == "av1_nvenc":
+        return ["-c:v", "av1_nvenc", "-preset", "p1", "-cq", str(settings.video.crf),
+                "-rc", "vbr", "-b:v", "4M", "-maxrate", "8M"]
+    elif encoder == "av1_qsv":
+        return ["-c:v", "av1_qsv", "-preset", "veryfast", "-global_quality", str(settings.video.crf)]
     elif encoder == "h264_amf":
         return ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp",
                 "-qp_i", str(settings.video.crf), "-qp_p", str(settings.video.crf)]
@@ -184,7 +232,6 @@ def _video_encoder_params() -> list[str]:
 
 def section_video(color: str, output_path: str | Path, duration: float = 10.0,
                   text: str = "", width: int = 0, height: int = 0) -> Optional[Path]:
-    """Generate a solid-color background video with optional centered text."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     w = width or settings.video.width
@@ -213,27 +260,20 @@ def section_video(color: str, output_path: str | Path, duration: float = 10.0,
             str(out),
         ]
 
-    if run(cmd, desc=f"section_video: {Path(output_path).name}"):
-        return out
-    return None
+    ok, _ = run(cmd, desc=f"section_video: {Path(output_path).name}")
+    return out if ok else None
 
 
 def burn_subtitles(video_path: str | Path, srt_path: str | Path,
                    output_path: str | Path) -> Optional[Path]:
-    """Burn SRT subtitles into video. Handles Windows drive-letter colons."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     srt_resolved = Path(srt_path).resolve()
 
-    # Copy SRT to same dir as output to avoid colon-escape issues in filter syntax
-    local_srt = out.parent / "subs.srt"
     import shutil
+    local_srt = out.parent / "subs.srt"
     shutil.copy2(str(srt_resolved), str(local_srt))
-    local_srt_str = str(local_srt)
 
-    # Escape Windows drive-letter colon for FFmpeg subtitles filter:
-    # \: tells FFmpeg the colon is part of the path, not an option separator
-    # Use cwd + bare filename to avoid Windows drive-letter colon issues
     style_opts = "FontSize=18,PrimaryColour=&HFFFFFF,BackColour=&H80000000,BorderStyle=4,Alignment=2"
     safe_style = style_opts.replace(",", "\\,")
     cmd = [
@@ -245,19 +285,11 @@ def burn_subtitles(video_path: str | Path, srt_path: str | Path,
         str(out),
     ]
 
-    # Run with cwd set to output directory so "subs.srt" resolves locally
-    old = Path.cwd()
-    try:
-        result = run(cmd, desc="burn subtitles", cwd=str(out.parent))
-    finally:
-        pass
-    if result:
-        return out
-    return None
+    ok, _ = run(cmd, desc="burn subtitles", cwd=str(out.parent))
+    return out if ok else None
 
 
 def concat_videos(input_paths: list[Path], output_path: str | Path) -> Optional[Path]:
-    """Concatenate multiple video files. Uses TEMP to avoid Unicode path issues."""
     if not input_paths:
         logger.error("concat_videos: no input paths provided")
         return None
@@ -293,17 +325,16 @@ def concat_videos(input_paths: list[Path], output_path: str | Path) -> Optional[
         str(out),
     ]
 
-    result = out if run(cmd, desc="concat videos", cwd=str(safe_dir)) else None
+    ok, _ = run(cmd, desc="concat videos", cwd=str(safe_dir))
     try:
         shutil.rmtree(safe_dir, ignore_errors=True)
     except OSError:
         pass
-    return result
+    return out if ok else None
 
 
 def add_audio(video_path: str | Path, audio_path: str | Path,
               output_path: str | Path) -> Optional[Path]:
-    """Replace or add audio track to video."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -318,14 +349,12 @@ def add_audio(video_path: str | Path, audio_path: str | Path,
         str(out),
     ]
 
-    if run(cmd, desc="add audio track"):
-        return out
-    return None
+    ok, _ = run(cmd, desc="add audio track")
+    return out if ok else None
 
 
 def add_audio_and_subs(video_path: str | Path, audio_path: str | Path,
                         srt_path: str | Path, output_path: str | Path) -> Optional[Path]:
-    """Add audio and burn subtitles in a single FFmpeg pass."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -346,20 +375,17 @@ def add_audio_and_subs(video_path: str | Path, audio_path: str | Path,
         "-shortest",
         str(out),
     ]
-    if run(cmd, desc="add audio + subs", cwd=str(out.parent)):
-        return out
-    return None
+    ok, _ = run(cmd, desc="add audio + subs", cwd=str(out.parent))
+    return out if ok else None
 
 
 def concat_audio(input_paths: list[Path], output_path: str | Path) -> Optional[Path]:
-    """Concatenate multiple WAV files."""
     if not input_paths:
         logger.warning("concat_audio: empty input list, generating silent track")
         return generate_silent_audio(output_path, duration=30.0)
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use the concat protocol for WAV files
     inputs = []
     filter_parts = []
     for i, p in enumerate(input_paths):
@@ -378,13 +404,11 @@ def concat_audio(input_paths: list[Path], output_path: str | Path) -> Optional[P
         str(out),
     ]
 
-    if run(cmd, desc="concat audio"):
-        return out
-    return None
+    ok, _ = run(cmd, desc="concat audio")
+    return out if ok else None
 
 
 def generate_silent_audio(output_path: str | Path, duration: float = 10.0) -> Optional[Path]:
-    """Generate a silent AAC audio track of given duration."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -395,13 +419,11 @@ def generate_silent_audio(output_path: str | Path, duration: float = 10.0) -> Op
         "-ac", "2",
         str(out),
     ]
-    if run(cmd, desc="silent audio"):
-        return out
-    return None
+    ok, _ = run(cmd, desc="silent audio")
+    return out if ok else None
 
 
 def generate_srt(segments: list[dict]) -> str:
-    """Generate SRT subtitle content from time-coded segments."""
     lines = []
     for i, seg in enumerate(segments, 1):
         start = seg.get("start_s", 0)

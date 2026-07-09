@@ -22,6 +22,14 @@ def _fake_lineages(*items):
 
 
 class TestSelectTopic:
+    @pytest.fixture(autouse=True)
+    def _mock_intelligence(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = []
+            mock_log.return_value = []
+            yield
+
     def test_from_brain(self):
         assert select_topic({"top_topic": "Brain Picked Topic"}, {}) == "Brain Picked Topic"
 
@@ -71,6 +79,25 @@ class TestSelectTopic:
         mock_lineages.return_value = []
         assert select_topic({}, {"top_recommendations": [""]}) == "business failure"
 
+    def test_picks_intelligence_over_brain(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = [{"topic": "AI Picked", "opportunity_score": 85.0}]
+            mock_log.return_value = []
+            result = select_topic({"top_topic": "Brain Topic"}, {})
+            assert result == "AI Picked"
+
+    def test_skips_published_intelligence_topics(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = [
+                {"topic": "Already Published", "opportunity_score": 90.0},
+                {"topic": "Fresh Topic", "opportunity_score": 80.0},
+            ]
+            mock_log.return_value = [{"topic": "Already Published", "pipeline_status": "completed", "error": ""}]
+            result = select_topic({}, {"top_recommendations": ["Brain Topic"]})
+            assert result == "Fresh Topic"
+
 
 class TestExecutePipeline:
     @patch("mindmargin.agents.decision_executor.Pipeline")
@@ -80,7 +107,7 @@ class TestExecutePipeline:
         MockPipeline.return_value = mock_pipe
 
         result = execute_pipeline("Test Topic", quick=False)
-        MockPipeline.assert_called_once_with(topic="Test Topic", duration_scale=1.0)
+        MockPipeline.assert_called_once_with(topic="Test Topic", duration_scale=1.0, editing_timeout=None)
         mock_pipe.run.assert_called_once()
         assert result["status"] == "completed"
         assert result["pipeline_id"] == "pid-123"
@@ -92,7 +119,7 @@ class TestExecutePipeline:
         MockPipeline.return_value = mock_pipe
 
         execute_pipeline("Quick Topic", quick=True)
-        MockPipeline.assert_called_once_with(topic="Quick Topic", duration_scale=0.1)
+        MockPipeline.assert_called_once_with(topic="Quick Topic", duration_scale=0.1, editing_timeout=None)
 
     @patch("mindmargin.agents.decision_executor.Pipeline")
     def test_pipeline_failure_returns_status(self, MockPipeline):
@@ -123,7 +150,7 @@ class TestLogExecution:
             )
             mock_mark.assert_called_once_with("Test Topic")
 
-    def test_with_error(self):
+    def test_with_error_does_not_mark_published(self):
         with patch("mindmargin.agents.decision_executor.save_execution_log") as mock_save, \
              patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
             log_execution(
@@ -137,7 +164,7 @@ class TestLogExecution:
                 video_id="", video_url="",
                 error="pipeline crashed",
             )
-            mock_mark.assert_called_once_with("Bad Topic")
+            mock_mark.assert_not_called()
 
     def test_defaults(self):
         with patch("mindmargin.agents.decision_executor.save_execution_log") as mock_save, \
@@ -156,13 +183,16 @@ class TestLogExecution:
 class TestExecuteTopDecision:
     @patch("mindmargin.analytics.channel_brain.run_brain_cycle")
     @patch("mindmargin.analytics.growth_engine.run_growth_analysis")
+    @patch("mindmargin.analytics.memory.get_top_opportunities")
+    @patch("mindmargin.intelligence.scoring.run_opportunity_scoring")
     @patch("mindmargin.agents.decision_executor.execute_pipeline")
     @patch("mindmargin.agents.decision_executor.publish_video")
     @patch("mindmargin.agents.decision_executor.save_pipeline_result")
     @patch("mindmargin.agents.decision_executor.log_execution")
     @patch("mindmargin.agents.decision_executor._check_channel_health")
     @patch("mindmargin.agents.decision_executor._check_daily_publish_cap")
-    def test_full_success(self, mock_cap, mock_health, mock_log, mock_save_pr, mock_pub, mock_pipe, mock_growth, mock_brain):
+    def test_full_success(self, mock_cap, mock_health, mock_log, mock_save_pr, mock_pub, mock_pipe, mock_scoring, mock_opps, mock_growth, mock_brain):
+        mock_opps.return_value = []
         mock_health.return_value = (False, "")
         mock_cap.return_value = (False, "")
         mock_brain.return_value = {
@@ -453,3 +483,264 @@ class TestCircuitBreaker:
         result = execute_top_decision()
         assert result["status"] == "disabled"
         de._CIRCUIT_BREAKER_TRIPPED = False
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Regression tests: Daily publish cap & topic publish state
+# ═══════════════════════════════════════════════════════════════════
+
+class TestDailyPublishCapRegression:
+    """Regression tests ensuring the daily publish cap only counts genuine
+    successful YouTube uploads and never blocks on failed/skipped/duplicate
+    executions."""
+
+    def test_failed_publish_does_not_increment_cap(self):
+        """A pipeline that failed should NOT count toward the daily cap."""
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            log_execution(
+                pipeline_id="pipe-fail-1", topic="Failed Topic",
+                pipeline_status="failed", error="pipeline crashed",
+            )
+            mock_mark.assert_not_called()
+
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": "2099-01-01 12:00:00", "error": "pipeline crashed",
+                 "pipeline_status": "failed", "topic": "Failed Topic"},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert not blocked
+            assert "published today" not in reason
+
+    def test_skipped_publish_does_not_increment_cap(self):
+        """auto_publish=False should NOT count toward the daily cap."""
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": "2099-01-01 12:00:00", "error": "pipeline failed",
+                 "pipeline_status": "completed", "topic": "Skipped Topic",
+                 "video_id": ""},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert not blocked
+
+    def test_duplicate_detection_does_not_increment_cap(self):
+        """Duplicate detection returning video_id but error='duplicate_skipped'
+        should NOT count toward the daily cap."""
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": "2099-01-01 12:00:00", "error": "duplicate_skipped",
+                 "pipeline_status": "completed", "topic": "Dup Topic",
+                 "video_id": "existing_vid"},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert not blocked
+
+    def test_successful_upload_increments_cap_exactly_once(self):
+        """A genuine successful upload (error='' and video_id non-empty)
+        should count exactly once toward the daily cap."""
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": "2099-01-01 12:00:00", "error": "",
+                 "pipeline_status": "completed", "topic": "Good Topic",
+                 "video_id": "real_vid_123"},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert blocked
+            assert "daily cap 1 reached (1 published today)" in reason
+
+    def test_daily_cap_resets_after_24_hours(self):
+        """Execution logs older than 24h should NOT count toward the cap."""
+        from datetime import datetime, timedelta
+        old_cutoff = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": old_cutoff, "error": "",
+                 "pipeline_status": "completed", "topic": "Old Topic",
+                 "video_id": "old_vid"},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert not blocked
+
+    def test_retry_after_failure_not_blocked(self):
+        """After a failed execution, the same topic should be retryable."""
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = [
+                {"topic": "Retry Topic", "opportunity_score": 90.0},
+            ]
+            # Previous attempt failed
+            mock_log.return_value = [
+                {"topic": "Retry Topic", "pipeline_status": "failed",
+                 "error": "something broke", "executed_at": "2099-01-01 12:00:00"},
+            ]
+            result = select_topic({"top_topic": "Brain Topic"}, {})
+            assert result == "Retry Topic"
+
+    def test_recovery_after_restart_not_blocked(self):
+        """After a restart with old execution logs, daily cap should not block."""
+        from datetime import datetime, timedelta
+        old_time = (datetime.utcnow() - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": old_time, "error": "",
+                 "pipeline_status": "completed", "topic": "Restart Topic",
+                 "video_id": "restart_vid"},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert not blocked
+
+    def test_repeated_execution_no_false_publish_records(self):
+        """Executing the same workflow twice should not create false publish
+        records if the second execution is a duplicate."""
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            # First execution: successful
+            log_execution(
+                pipeline_id="pipe-dup-1", topic="Dup Topic",
+                pipeline_status="completed", video_id="vid_123",
+                video_url="https://youtu.be/vid_123",
+            )
+            assert mock_mark.call_count == 1
+
+            # Second execution: duplicate detection
+            mock_mark.reset_mock()
+            log_execution(
+                pipeline_id="pipe-dup-1", topic="Dup Topic",
+                pipeline_status="completed", video_id="vid_123",
+                video_url="https://youtu.be/vid_123",
+                error="duplicate_skipped",
+            )
+            mock_mark.assert_not_called()
+
+    def test_mixed_results_count_only_successes(self):
+        """With a mix of failed, skipped, duplicate, and successful executions,
+        only genuine successes should count toward the cap."""
+        with patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_log.return_value = [
+                {"executed_at": "2099-01-01 10:00:00", "error": "",
+                 "pipeline_status": "completed", "topic": "Success",
+                 "video_id": "vid_success"},
+                {"executed_at": "2099-01-01 11:00:00", "error": "pipeline crashed",
+                 "pipeline_status": "failed", "topic": "Failed",
+                 "video_id": ""},
+                {"executed_at": "2099-01-01 12:00:00", "error": "duplicate_skipped",
+                 "pipeline_status": "completed", "topic": "Duplicate",
+                 "video_id": "existing_vid"},
+                {"executed_at": "2099-01-01 13:00:00", "error": "pipeline failed",
+                 "pipeline_status": "completed", "topic": "Skipped",
+                 "video_id": ""},
+            ]
+            from mindmargin.agents.decision_executor import _check_daily_publish_cap
+            blocked, reason = _check_daily_publish_cap()
+            assert blocked
+            assert "1 published today" in reason
+
+
+class TestLogExecutionPublishState:
+    """Tests that mark_topic_published is only called after genuine uploads."""
+
+    def test_successful_upload_marks_published(self):
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            log_execution(
+                pipeline_id="pipe-ok", topic="Good Topic",
+                pipeline_status="completed", video_id="vid_real",
+            )
+            mock_mark.assert_called_once_with("Good Topic")
+
+    def test_failed_pipeline_does_not_mark_published(self):
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            log_execution(
+                pipeline_id="pipe-fail", topic="Bad Topic",
+                pipeline_status="failed", error="crash",
+            )
+            mock_mark.assert_not_called()
+
+    def test_completed_without_video_id_does_not_mark_published(self):
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            log_execution(
+                pipeline_id="pipe-novid", topic="No Vid Topic",
+                pipeline_status="completed", video_id="",
+            )
+            mock_mark.assert_not_called()
+
+    def test_duplicate_error_does_not_mark_published(self):
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            log_execution(
+                pipeline_id="pipe-dup", topic="Dup Topic",
+                pipeline_status="completed", video_id="existing_vid",
+                error="duplicate_skipped",
+            )
+            mock_mark.assert_not_called()
+
+    def test_skipped_publish_does_not_mark_published(self):
+        with patch("mindmargin.agents.decision_executor.save_execution_log"), \
+             patch("mindmargin.agents.decision_executor.mark_topic_published") as mock_mark:
+            log_execution(
+                pipeline_id="pipe-skip", topic="Skip Topic",
+                pipeline_status="completed", video_id="",
+                error="pipeline failed",
+            )
+            mock_mark.assert_not_called()
+
+
+class TestSelectTopicRetryBehavior:
+    """Tests that select_topic allows retry of failed topics."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_intelligence(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = []
+            mock_log.return_value = []
+            yield
+
+    def test_failed_topic_not_in_published_set(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = [
+                {"topic": "Failed Before", "opportunity_score": 90.0},
+            ]
+            mock_log.return_value = [
+                {"topic": "Failed Before", "error": "crash",
+                 "pipeline_status": "failed"},
+            ]
+            result = select_topic({}, {})
+            assert result == "Failed Before"
+
+    def test_successful_topic_in_published_set(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = [
+                {"topic": "Already Done", "opportunity_score": 90.0},
+                {"topic": "Fresh One", "opportunity_score": 80.0},
+            ]
+            mock_log.return_value = [
+                {"topic": "Already Done", "error": "",
+                 "pipeline_status": "completed"},
+            ]
+            result = select_topic({}, {})
+            assert result == "Fresh One"
+
+    def test_duplicate_skipped_topic_not_in_published_set(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log:
+            mock_opps.return_value = [
+                {"topic": "Dup Skipped", "opportunity_score": 90.0},
+            ]
+            mock_log.return_value = [
+                {"topic": "Dup Skipped", "error": "duplicate_skipped",
+                 "pipeline_status": "completed", "video_id": "old_vid"},
+            ]
+            result = select_topic({}, {})
+            assert result == "Dup Skipped"

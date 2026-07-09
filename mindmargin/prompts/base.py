@@ -1,120 +1,353 @@
-"""Core prompt templates for all AI generation."""
+"""Core prompt templates for all AI generation.
 
-RESEARCH_SYSTEM = """You are a research analyst specializing in behavioral economics and business history. You produce concise, factual research briefs with psychological insights."""
+Phase 21: Documentary Production Engine — prompts upgraded for professional
+documentary-quality content generation.
+"""
 
-RESEARCH_PROMPT = """Research the topic '{topic}' for a behavioral economics documentary.
+# ═══════════════════════════════════════════════════════════════════
+#  RESEARCH
+# ═══════════════════════════════════════════════════════════════════
 
-Provide:
-1. A trend score (0-100) predicting audience interest
-2. 3-5 key events with dates
-3. Key psychological biases at play
-4. 2-3 critical decisions that defined the outcome
-5. 3-5 authoritative sources
+RESEARCH_SYSTEM = """You are an elite research analyst specializing in business history, corporate failures, and behavioral economics. You produce comprehensive, well-sourced research briefs with psychological depth. Your research covers timelines, financials, key figures, market dynamics, and human drama."""
 
-Return as JSON with keys: trend_score, events (list of dicts with date, title, description), biases (list), critical_decisions (list of dicts), sources (list of strings)"""
+RESEARCH_PROMPT = """Conduct comprehensive research on '{topic}' for a professional documentary.
 
-SCRIPT_SYSTEM = """You are an award-winning documentary scriptwriter specializing in behavioral economics and narrative storytelling. Your scripts are cinematic, emotionally engaging, and psychologically insightful. You write in a style similar to BBC documentaries, with vivid narrative drive and analytical depth."""
+You must collect ALL of the following categories. Be as thorough as possible:
 
-SECTION_PROMPTS = {
-    "hook": """Write the HOOK section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+1. TIMELINE: Key events with exact dates (founding, IPO, peak, crisis,结局)
+2. FOUNDERS & KEY FIGURES: Names, roles, backgrounds, key decisions they made
+3. FINANCIAL MILESTONES: Revenue figures, market cap, stock price peaks, losses
+4. MARKET SHARE: Industry position, competitors, market dynamics over time
+5. ACQUISITIONS & DEALS: Major M&A activity, partnerships, investments
+6. KEY DECISIONS: The 3-5 critical decisions that shaped the outcome
+7. INTERNAL CONFLICTS: Leadership disputes, board battles, cultural problems
+8. PUBLIC REACTIONS: Media coverage, customer sentiment, employee morale
+9. MAJOR QUOTES: Direct quotes from executives, analysts, employees (attribution required)
+10. LEGAL & REGULATORY: Court cases, SEC filings, investigations, settlements
+11. IMPORTANT INTER interviews: Notable public statements, press conferences, earnings calls
+12. EARNINGS DATA: Quarterly/annual results showing trajectory
+13. HISTORICAL CONTEXT: Industry trends, economic conditions, technological shifts
+14. PSYCHOLOGICAL BIASES: Overconfidence, sunk cost, confirmation bias, groupthink at play
+15. LESSONS & ANALYSIS: What behavioral economists say about this case
+16. CONTRASTING VIEWS: Different perspectives on what went wrong
+17. CURRENT STATUS: What exists today as a result (bankruptcy, acquisition, transformation)
 
-Style: Open with a shocking statistic, provocative question, or vivid scene that immediately grabs attention. Use open loops. Create curiosity gaps. End with a promise that compels the viewer to keep watching.
+Return as JSON with ALL keys: timeline, founders, financials, market_share, acquisitions,
+key_decisions, internal_conflicts, public_reactions, quotes, legal, interviews,
+earnings, historical_context, psychological_biases, lessons, contrasting_views,
+current_status, trend_score, sources"""
 
-Write 150-300 words of compelling narration.""",
+# ═══════════════════════════════════════════════════════════════════
+#  DOCUMENTARY SCRIPT SYSTEM
+# ═══════════════════════════════════════════════════════════════════
 
-    "rise": """Write the RISE section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+SCRIPT_SYSTEM = """You are a world-class documentary scriptwriter. You write scripts for YouTube documentaries that rival BBC, PBS, and Netflix productions. Your writing is cinematic, emotionally gripping, and analytically rigorous.
 
-Style: Chronicle the early success story. Show the optimism, the vision, the rapid growth. Make the audience feel the excitement and momentum. Foreshadow the cracks subtly.
+CRITICAL RULES:
+- Write ONLY narration text — never include stage directions, B-roll notes, or scene descriptions
+- Use natural spoken language — this will be read by a voice actor
+- Every sentence must earn its place — no filler, no padding
+- Vary sentence length dramatically — mix short punchy sentences with longer flowing ones
+- Use specific numbers, dates, names, and details — never vague generalities
+- Create vivid mental images through concrete details
+- Build emotional tension through the narrative arc
+- Never repeat information already covered
+- Write as if telling a story to a smart friend over coffee
+- Target 200-350 words per section for natural narration pacing"""
 
-Write 200-400 words.""",
+DOCUMENTARY_SECTION_PROMPTS = {
+    "hook": """Write the HOOK for a documentary about {topic}.
 
-    "first_crack": """Write the FIRST CRACK section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+This is the first 15-30 seconds. It must be IMPOSSIBLE to stop watching.
 
-Style: The first warning signs emerge. Early skeptics, ignored red flags. Build tension. Show how rational people rationalized away the evidence. Introduce the key psychological bias at play.
+Techniques that work:
+- Open mid-scene ("The boardroom went silent...")
+- Shocking statistic or number
+- Paradox or contradiction
+- Vivid scene-setting
+- Provocative question
 
-Write 200-400 words.""",
+You must create an OPEN LOOP — the viewer needs to know what happens next.
 
-    "overconfidence_loop": """Write the OVERCONFIDENCE LOOP section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+Write 100-200 words. Pure narration — no stage directions.""",
 
-Style: Deep dive into the psychology. Overconfidence bias, illusion of control, confirmation bias. Show how success bred arrogance. Use behavioral economics concepts naturally within the narrative.
+    "context": """Write the CONTEXT section for a documentary about {topic}.
 
-Write 250-450 words.""",
+This establishes the world BEFORE the story begins. Help the viewer understand:
+- What industry/era are we in?
+- What was the status quo?
+- What were people's expectations?
+- What was the competitive landscape?
 
-    "escalation": """Write the ESCALATION section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+Use specific numbers and details. Paint a picture of the world that existed.
 
-Style: Doubling down despite mounting evidence. Sunk cost fallacy in action. The stakes get higher. Tension becomes unbearable. Paint the picture of people trapped by their own decisions.
+Write 200-350 words. Pure narration.""",
 
-Write 200-400 words.""",
+    "historical_background": """Write the HISTORICAL BACKGROUND for a documentary about {topic}.
 
-    "collapse": """Write the COLLAPSE section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+This is the origin story. Cover:
+- Who founded/started it and why
+- The early days (struggles, breakthroughs)
+- The founding team and their vision
+- Key early decisions
+- What made it different from the start
 
-Style: The moment everything falls apart. Dramatic, visceral storytelling. Show the human cost. Let the weight of failure sink in. Use specific details and moments.
+Use dates, names, specific events. Make it feel like a real story, not a Wikipedia article.
 
-Write 200-400 words.""",
+Write 250-400 words. Pure narration.""",
 
-    "twist": """Write the TWIST section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+    "growth_story": """Write the GROWTH STORY for a documentary about {topic}.
 
-Style: The unexpected angle. What most people get wrong about this story. A contrarian take backed by evidence. Surprise the audience. Reframe everything they thought they knew.
+This is the ascent. Show:
+- The rapid rise — specific numbers, milestones, achievements
+- What was driving the success
+- How the market/culture responded
+- The human element — what did it feel like to be there?
+- Key moments of triumph
 
-Write 150-300 words.""",
+Make the viewer feel the momentum, the excitement, the inevitability.
 
-    "lesson": """Write the LESSON section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+Write 300-450 words. Pure narration.""",
 
-Style: Extract actionable wisdom. Connect to universal human biases. Make it personal for the viewer. Bridge from historical case study to personal relevance.
+    "critical_decisions": """Write the CRITICAL DECISIONS section for a documentary about {topic}.
 
-Write 150-300 words.""",
+Focus on the 3-5 decisions that defined everything. For each:
+- What was decided
+- Who decided it
+- What the alternatives were
+- Why they chose this path
+- What the consequences were
 
-    "close": """Write the CLOSE section of a documentary script about {topic}.
-Section title: {title}
-Duration target: {duration_s}s
+Show the HUMAN element — ego, ambition, fear, groupthink. Make the viewer understand why smart people made bad choices.
 
-Style: Memorable, emotional ending. Echo the opening hook. Leave the audience with a lasting thought or question. Call to action for the channel (like, subscribe, comment). End on a powerful note.
+Write 300-450 words. Pure narration.""",
 
-Write 100-200 words.""",
+    "main_mistakes": """Write the MAIN MISTAKES section for a documentary about {topic}.
+
+This is where you dissect what went wrong. Cover:
+- The critical errors in judgment
+- Warning signs that were ignored
+- The psychology behind the mistakes (overconfidence, sunk cost, confirmation bias)
+- How internal culture contributed
+- The point of no return
+
+Be specific. Use names, dates, numbers. Show, don't just tell.
+
+Write 300-450 words. Pure narration.""",
+
+    "collapse": """Write the COLLAPSE section for a documentary about {topic}.
+
+This is the dramatic climax. Show:
+- The moment everything fell apart
+- The human cost — jobs lost, lives changed
+- The speed of the collapse
+- Key moments and turning points
+- How the people involved reacted
+
+Make it visceral. Let the weight of failure sink in.
+
+Write 300-450 words. Pure narration.""",
+
+    "consequences": """Write the CONSEQUENCES section for a documentary about {topic}.
+
+After the collapse, what happened? Cover:
+- Impact on employees, customers, investors
+- Industry ripple effects
+- Legal/regulatory aftermath
+- What replaced it
+- How it changed the industry/culture
+
+Show the broader impact beyond just one company.
+
+Write 250-400 words. Pure narration.""",
+
+    "lessons_learned": """Write the LESSONS LEARNED section for a documentary about {topic}.
+
+Extract universal wisdom. Connect to:
+- Behavioral economics principles (name specific biases)
+- Business strategy lessons
+- Human psychology insights
+- What this teaches us about ambition, greed, innovation
+- How to recognize similar patterns in the future
+
+Make it personal for the viewer. Why should they care?
+
+Write 250-400 words. Pure narration.""",
+
+    "closing": """Write the CLOSING for a documentary about {topic}.
+
+This must be unforgettable. Techniques:
+- Echo the opening hook
+- Leave a lasting question
+- Connect to the present day
+- Hint at the next documentary
+- End on an emotional note
+
+The last sentence should make the viewer sit in silence for a moment.
+
+Write 100-200 words. Pure narration.""",
 }
 
-HOOK_SYSTEM = """You are a YouTube hook optimization specialist. You create hooks that maximize click-through rate and audience retention."""
+# ═══════════════════════════════════════════════════════════════════
+#  SCENE PLANNING
+# ═══════════════════════════════════════════════════════════════════
 
-HOOK_PROMPT = """Generate 5 YouTube video hooks for a documentary about '{topic}' in the behavioral economics niche.
+SCENE_PLANNING_SYSTEM = """You are a documentary visual director. You plan scenes that match narration with compelling visuals. You think in terms of shots, movement, pacing, and visual storytelling."""
 
-For each hook, provide:
-- archetype: one of [curiosity_gap, fear_based, contrarian, shock_value, mystery]
-- hook_text: the actual hook (1-2 sentences, punchy)
-- ctr_score: estimated click-through rate (0-100)
-- emotional_trigger: the primary emotion it triggers
-- retention_score: estimated audience retention (0-100)
-- open_loop: whether it creates an open loop (true/false)
-- engagement_bait: whether it prompts comments (true/false)
+SCENE_PLANNING_PROMPT = """Plan visual scenes for this documentary section about {topic}.
 
-Return as JSON array of objects."""
+For each paragraph (3-5 sentences), create a scene with:
+- scene_description: What the viewer sees (1-2 sentences)
+- broll_suggestion: Specific B-roll footage to search for
+- footage_keywords: 3-5 search terms for stock footage
+- camera_movement: Static, pan_left, pan_right, zoom_in, zoom_out, tracking, drone
+- on_screen_text: Key text/numbers to display (if any)
+- visual_elements: Charts, maps, logos, documents, newspaper clippings to show
+- duration_s: Estimated seconds this scene covers
+- emotion: The emotional tone of this visual
 
-TITLE_SYSTEM = "You are a YouTube title optimization expert."
+Write 5-8 scenes per section. Return as JSON array."""
 
-TITLE_PROMPT = """Generate 5 YouTube video titles for a documentary about '{topic}' in the behavioral economics / business autopsy niche.
+# ═══════════════════════════════════════════════════════════════════
+#  HOOK OPTIMIZATION
+# ═══════════════════════════════════════════════════════════════════
 
-Each title must be:
-- Clickable (curiosity gap, numbers, power words)
-- SEO-optimized (include target keywords)
-- Under 70 characters
-- Descriptive enough that viewers know what they'll learn
+HOOK_SYSTEM = """You are a YouTube hook optimization specialist. You create hooks that make it psychologically impossible to click away. You understand curiosity gaps, open loops, and emotional triggers at a deep level."""
 
-Return as JSON array of strings."""
+HOOK_PROMPT = """Generate 5 hooks for a documentary about '{topic}'.
+
+Each hook must:
+- Be 1-2 sentences (15-30 seconds when spoken)
+- Create an immediate curiosity gap
+- Make the viewer NEED to know what happens next
+- Feel like the opening of a Netflix documentary
+
+For each hook provide:
+- hook_text: The actual narration
+- archetype: curiosity_gap | shock_value | paradox | mid_scene | confession
+- ctr_score: 0-100 (estimated click-through rate)
+- retention_score: 0-100 (estimated audience retention past 30s)
+- emotional_trigger: primary emotion triggered
+- curiosity_gap_strength: 0-100 (how badly viewer needs to know what happens)
+- open_loop_count: number of unanswered questions created
+- why_it_works: 1-sentence explanation
+
+Return as JSON array. Rank by ctr_score descending."""
+
+# ═══════════════════════════════════════════════════════════════════
+#  TITLE GENERATION
+# ═══════════════════════════════════════════════════════════════════
+
+TITLE_SYSTEM = """You are a YouTube title optimization expert. You understand that titles must create psychological tension that demands resolution."""
+
+TITLE_PROMPT = """Generate 15 YouTube titles for a documentary about '{topic}'.
+
+Requirements:
+- Under 60 characters (YouTube truncates after 60)
+- Must create curiosity gap or emotional tension
+- Include at least 3 power words (destroyed, secret, billion, forbidden, exposed, etc.)
+- No clickbait — must be factual
+- Mix formats: question, number, statement, paradox
+
+For each title provide:
+- title: The title text
+- curiosity_score: 0-100
+- ctr_prediction: 0-100 (estimated click-through rate)
+- emotional_score: 0-100 (emotional resonance)
+- format: question | number | statement | paradox | confession
+- why_it_works: 1-sentence explanation
+
+Return as JSON array. Rank by ctr_prediction descending."""
+
+# ═══════════════════════════════════════════════════════════════════
+#  THUMBNAIL INTELLIGENCE
+# ═══════════════════════════════════════════════════════════════════
+
+THUMBNAIL_SYSTEM = """You are a YouTube thumbnail design strategist. You understand that thumbnails must communicate emotion and curiosity in under 1 second. You think in terms of contrast, facial expressions, color psychology, and visual hierarchy."""
+
+THUMBNAIL_CONCEPT_PROMPT = """Generate 10 thumbnail concepts for a documentary about '{topic}'.
+
+Each concept must include:
+- main_subject: What dominates the frame (person, object, scene)
+- facial_expression: If person — what emotion (shock, anger, smug, disbelief, fear)
+- color_palette: Primary and accent colors (hex codes)
+- composition: Rule of thirds | center | split | diagonal
+- contrast_level: low | medium | high | extreme
+- text_overlay: Max 3 words (or "none")
+- text_position: top | bottom | left | right | center
+- emotion_score: 0-100 (how strongly it communicates the story's emotion)
+- curiosity_score: 0-100 (how much it makes you want to click)
+- visual_hierarchy: What the eye sees first → second → third
+
+Return as JSON array. Rank by (emotion_score + curiosity_score) / 2 descending."""
+
+# ═══════════════════════════════════════════════════════════════════
+#  QUALITY GATES
+# ═══════════════════════════════════════════════════════════════════
+
+QUALITY_SYSTEM = """You are a rigorous documentary quality assessor. You evaluate scripts against professional documentary standards. You are honest — you do not give participation trophies."""
+
+QUALITY_SCORING_PROMPT = """Evaluate this documentary script section against professional standards.
+
+Script: {text}
+Section: {section_name}
+Topic: {topic}
+
+Rate each metric 0-100:
+1. narrative_arc: Does it tell a compelling story?
+2. specificity: Are there concrete details (names, dates, numbers)?
+3. emotional_depth: Does it create genuine emotional engagement?
+4. pacing: Is the rhythm natural for spoken narration?
+5. originality: Does it offer fresh perspective?
+6. transitions: Do sentences flow naturally?
+7. information_density: Right amount of detail (not too much, not too little)?
+8. behavioral_insight: Does it reveal something about human psychology?
+9. documentary_quality: Would this pass in a BBC/Netflix documentary?
+10. overall_score: Composite assessment
+
+Also check for REJECTION criteria:
+- under_1500_words: Total script under 1500 words
+- repetition: Same information repeated
+- no_story_arc: Reads like a list, not a story
+- weak_transitions: Sentences don't connect
+- wikipedia_style: Reads like an encyclopedia entry
+- ai_sounding: Generic, formulaic language
+- unsupported_claims: Statistics or facts without attribution
+
+Return as JSON with scores, rejections (list), and improvement_suggestions."""
+
+# ═══════════════════════════════════════════════════════════════════
+#  PRODUCTION REPORT
+# ═══════════════════════════════════════════════════════════════════
+
+PRODUCTION_REPORT_SYSTEM = """You are a documentary production analyst. You provide executive summaries of documentary quality with actionable insights."""
+
+PRODUCTION_REPORT_PROMPT = """Generate a production quality report for this documentary about '{topic}'.
+
+Title: {title}
+Word count: {word_count}
+Estimated duration: {estimated_duration} minutes
+Sections: {section_count}
+
+Evaluate and provide:
+1. story_score: 0-100 (overall narrative quality)
+2. documentary_quality_score: 0-100 (professional documentary standard)
+3. hook_score: 0-100 (opening hook strength)
+4. engagement_prediction: 0-100 (predicted audience retention)
+5. visual_diversity_score: 0-100 (variety of visual elements needed)
+6. estimated_retention_curve: [beginning%, middle%, end%] (predicted audience retention at each stage)
+7. estimated_ctr: percentage (predicted click-through rate)
+8. strengths: list of 3-5 things done well
+9. weaknesses: list of 3-5 things to improve
+10. comparable_references: 2-3 similar successful documentaries to reference
+11. recommended_improvements: prioritized list of specific improvements
+12. title_effectiveness: 0-100 (how well the title serves the content)
+
+Return as JSON."""
+
+# ═══════════════════════════════════════════════════════════════════
+#  SEO METADATA
+# ═══════════════════════════════════════════════════════════════════
 
 SEO_SYSTEM = "You are a YouTube SEO specialist."
 
@@ -128,6 +361,10 @@ Provide:
 5. 3-5 related video suggestions
 
 Return as JSON."""
+
+# ═══════════════════════════════════════════════════════════════════
+#  NARRATION ANALYSIS
+# ═══════════════════════════════════════════════════════════════════
 
 NARRATION_SYSTEM = """You are a voiceover director and pacing specialist. You analyze scripts and optimize them for spoken delivery."""
 
@@ -144,52 +381,40 @@ Provide:
 
 Return as JSON."""
 
-QUALITY_SYSTEM = "You are a rigorous quality assessor for documentary scripts."
-
-QUALITY_SCORING_PROMPT = """Score this script section for quality metrics.
-
-Script: {text}
-Section: {section_name}
-Topic: {topic}
-
-Rate each metric 0-100:
-1. hook_strength: How compelling is the opening?
-2. retention_potential: Will viewers stay engaged?
-3. emotional_intensity: How emotionally impactful?
-4. informational_value: How much does it teach?
-5. pacing_quality: Is the rhythm natural?
-6. clarity: Is the narrative easy to follow?
-7. originality: Fresh perspective or cliche?
-8. call_to_action_potential: Will it drive engagement?
-9. psychological_depth: Behavioral economics insight?
-10. overall_quality: Composite score
-
-Return as JSON with scores, a brief justification for each, and a list of improvement suggestions."""
+# ═══════════════════════════════════════════════════════════════════
+#  GENERATION MODES
+# ═══════════════════════════════════════════════════════════════════
 
 GENERATION_MODES = {
     "documentary": {
-        "system": "You are an award-winning documentary scriptwriter for BBC-style business documentaries. Authoritative, narrative-driven, analytical.",
+        "system": SCRIPT_SYSTEM,
         "temperature": 0.7,
-        "style_guide": "Balanced, researched tone. Third-person. Data-driven storytelling.",
+        "style_guide": "Professional documentary. Third-person narration. Data-driven storytelling. Vivid details. Emotional depth.",
     },
     "dark": {
-        "system": "You are a noir-style narrative writer. Your scripts are dark, dramatic, and cinematic. Think true crime meets business autopsy.",
+        "system": "You are a noir-style documentary writer. Your scripts are dark, atmospheric, and cinematic. Think true crime meets business autopsy. Every sentence drips with tension.",
         "temperature": 0.85,
-        "style_guide": "Atmospheric, tense, dramatic. Use vivid imagery. Lean into tragedy and human failure.",
+        "style_guide": "Atmospheric, tense, dramatic. Use vivid imagery. Lean into tragedy and human failure. Dark humor where appropriate.",
     },
     "educational": {
-        "system": "You are a university professor creating engaging educational content. Clear, structured, and insightful.",
+        "system": "You are a university professor creating engaging educational documentaries. Clear, structured, and insightful. You make complex topics accessible without dumbing them down.",
         "temperature": 0.5,
-        "style_guide": "Structured explanations. Define concepts. Use analogies. End with key takeaways.",
+        "style_guide": "Structured explanations. Define concepts. Use analogies. End with key takeaways. Academic rigor with storytelling flair.",
     },
     "motivational": {
-        "system": "You are a high-energy motivational speaker and business storyteller. Inspiring, punchy, transformative.",
+        "system": "You are a high-energy motivational documentary writer. You tell stories of triumph and failure that inspire action. Every word is chosen for maximum emotional impact.",
         "temperature": 0.8,
-        "style_guide": "Uplifting, action-oriented. Use rhetorical questions. Direct address to viewer. Empowering language.",
+        "style_guide": "Uplifting, action-oriented. Use rhetorical questions. Direct address to viewer. Empowering language. Transformation narratives.",
     },
     "viral_shorts": {
-        "system": "You write viral short-form video scripts. Every second must earn its place. Hook in 0-3 seconds, deliver value fast.",
+        "system": "You write viral short-form video scripts. Every second must earn its place. Hook in 0-3 seconds, deliver value fast, end with impact.",
         "temperature": 0.9,
         "style_guide": "Ultra-concise. Fast-paced. One big idea per section. Pattern interrupts. Strong hooks and endings.",
     },
 }
+
+# ═══════════════════════════════════════════════════════════════════
+#  BACKWARD COMPATIBILITY — keep old names working
+# ═══════════════════════════════════════════════════════════════════
+
+SECTION_PROMPTS = DOCUMENTARY_SECTION_PROMPTS  # alias for imports
