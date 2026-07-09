@@ -8,18 +8,19 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+from mindmargin.config import settings
 from mindmargin.core.pipeline import Pipeline
 from mindmargin.analytics.memory import (
     save_pipeline, save_pipeline_result, save_execution_log,
     save_titles, save_hooks, save_thumbnails,
     get_pipeline_history, get_topic_lineages, mark_topic_published,
-    get_execution_log,
+    get_execution_log, is_successful_publish,
 )
 
 logger = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_FAILURES = 3
-MIN_CONFIDENCE = 0.60
+MIN_CONFIDENCE = 0.50
 MIN_CHANNEL_HEALTH = 4.0
 MAX_DAILY_PUBLISH = 1
 
@@ -36,17 +37,43 @@ _TOPIC_DOMAINS = [
 def select_topic(brain_report: dict, growth_report: dict) -> str:
     """Select the highest-ranked actionable topic.
 
-    Fallback chain:
-      1. Brain's top topic (from _prioritize_topics)
-      2. Growth engine's top recommendation
-      3. Highest-confidence unpublished topic lineage
-      4. First available topic domain
+    Selection chain (intelligence-first):
+      1. Top opportunity from intelligence engine (via opportunity_scores table)
+      2. Brain's top topic (from _prioritize_topics)
+      3. Growth engine's top recommendation
+      4. Highest-confidence unpublished topic lineage
+      5. First available topic domain
     """
+    # Step 1: Intelligence engine — highest-scored unpublished opportunity
+    try:
+        from mindmargin.analytics.memory import get_top_opportunities, get_execution_log
+        opportunities = get_top_opportunities(20)
+        if opportunities:
+            published_topics = set()
+            for log in get_execution_log(100):
+                if log.get("error", ""):
+                    continue  # skip failed executions — allow retry
+                t = (log.get("topic") or "").strip().lower()
+                if t:
+                    published_topics.add(t)
+            logger.debug(f"Published topics (error-free): {published_topics}")
+            for opp in opportunities:
+                t = (opp.get("topic") or "").strip()
+                if t and t.lower() not in published_topics:
+                    logger.info(f"Topic from intelligence: '{t}' "
+                                f"(score={opp.get('opportunity_score', 0):.1f})")
+                    return t
+            logger.info("All intelligence opportunities already published, falling through")
+    except Exception as e:
+        logger.warning(f"Intelligence topic selection failed: {e}")
+
+    # Step 2: Brain's top topic
     topic = (brain_report.get("top_topic") or "").strip()
     if topic:
         logger.info(f"Topic from brain: '{topic}'")
         return topic
 
+    # Step 3: Growth engine's top recommendation
     top_recs = growth_report.get("top_recommendations") or []
     if top_recs:
         t = (top_recs[0] or "").strip()
@@ -54,6 +81,7 @@ def select_topic(brain_report: dict, growth_report: dict) -> str:
             logger.info(f"Topic from growth engine: '{t}'")
             return t
 
+    # Step 4: Unpublished lineage with best inheritance
     lineages = get_topic_lineages(limit=50)
     unpublished = [l for l in lineages if not l.get("is_published")]
     if unpublished:
@@ -63,37 +91,70 @@ def select_topic(brain_report: dict, growth_report: dict) -> str:
             logger.info(f"Topic from lineage: '{t}' (inherit={best.get('performance_inheritance', 0):.2f})")
             return t
 
+    # Step 5: First available domain
     t = _TOPIC_DOMAINS[0]
     logger.info(f"Fallback topic: '{t}'")
     return t
 
 
-def execute_pipeline(topic: str, quick: bool = False) -> dict:
+def execute_pipeline(topic: str, quick: bool = False,
+                     editing_timeout: int | None = None) -> dict:
     """Run the content generation pipeline for a given topic."""
     scale = 0.1 if quick else 1.0
-    pipe = Pipeline(topic=topic, duration_scale=scale)
+    pipe = Pipeline(topic=topic, duration_scale=scale,
+                    editing_timeout=editing_timeout)
     result = pipe.run()
     return result
 
 
 def publish_video(topic: str, pipeline_id: str, result: dict,
-                  privacy: str = "private") -> dict:
+                  privacy: str = "unlisted") -> dict:
     """Publish a completed pipeline's video to YouTube."""
     import time as _time
     from mindmargin.integrations.youtube import check_credentials, upload_video
     from mindmargin.agents.thumbnail import ThumbnailAgent, pick_best_thumbnail
     from mindmargin.agents.metadata import MetadataAgent
     from mindmargin.core.storage import project_dir
+    from mindmargin.analytics.memory import _get_db
     import json as _json
 
     _pub_start = _time.time()
+
+    # ── Fast-fail: validate YouTube credentials before any work ──
+    creds = check_credentials()
+    if not creds.get("authenticated"):
+        error_msg = creds.get("error", "YouTube authentication required")
+        logger.error(
+            f" YouTube upload blocked: {error_msg}\n"
+            f"   Fix: Ensure client_secrets.json and youtube_token.pickle exist.\n"
+            f"   See: GITHUB_SETUP.md for OAuth setup instructions."
+        )
+        return {"status": "failed", "error": f"YouTube auth failed: {error_msg}"}
+
+    # ── Duplicate publish protection ──
+    if settings.production.enable_duplicate_detection:
+        try:
+            conn = _get_db()
+            existing = conn.execute(
+                "SELECT youtube_video_id, youtube_url FROM pipelines WHERE id = ? AND youtube_video_id != ''",
+                (pipeline_id,)
+            ).fetchone()
+            if existing:
+                logger.info(f"Duplicate protection: pipeline {pipeline_id} already published as "
+                           f"{existing['youtube_video_id']}, skipping upload")
+                return {
+                    "status": "completed",
+                    "video_id": existing["youtube_video_id"],
+                    "url": existing["youtube_url"],
+                    "duplicate_skipped": True,
+                    "error": "duplicate_skipped",
+                }
+        except Exception as e:
+            logger.warning(f"Duplicate detection check failed: {e}")
+
     out_dir = Path(result.get("output_dir", ""))
     if not out_dir.exists():
         return {"status": "failed", "error": f"Output directory not found: {out_dir}"}
-
-    creds = check_credentials()
-    if not creds.get("authenticated"):
-        return {"status": "failed", "error": "YouTube auth required"}
 
     script_path = out_dir / "script" / "script.json"
     if not script_path.exists():
@@ -185,7 +246,12 @@ def log_execution(pipeline_id: str, topic: str,
                   pipeline_status: str = "completed",
                   video_id: str = "", video_url: str = "",
                   error: str = "") -> None:
-    """Save an execution record to the database."""
+    """Save an execution record to the database.
+
+    Only marks topic as published when pipeline completed AND a real video ID
+    was returned (not duplicate_skipped).  Failed pipelines, skipped publishes,
+    and duplicate detections never increment the daily publish counter.
+    """
     save_execution_log(
         pipeline_id=pipeline_id, topic=topic,
         decision_domain=decision_domain, decision_action=decision_action,
@@ -194,7 +260,18 @@ def log_execution(pipeline_id: str, topic: str,
         video_id=video_id, video_url=video_url,
         error=error,
     )
-    mark_topic_published(topic)
+    # Only mark as published after a genuine successful YouTube upload.
+    # Uses is_successful_publish() as the single source of truth.
+    if is_successful_publish({
+        "pipeline_status": pipeline_status,
+        "video_id": video_id,
+        "error": error,
+    }):
+        mark_topic_published(topic)
+        logger.debug(f"Topic '{topic}' marked as published (video_id={video_id})")
+    else:
+        logger.debug(f"Topic '{topic}' NOT marked as published "
+                     f"(status={pipeline_status}, video_id={video_id!r}, error={error!r})")
 
 
 def _check_circuit_breaker() -> bool:
@@ -255,17 +332,32 @@ def _check_channel_health() -> tuple[bool, str]:
         from mindmargin.analytics.channel_brain import run_brain_cycle
         brain = run_brain_cycle()
         health = brain.get("channel_health", {}).get("score", 10)
+        total_videos = brain.get("channel_health", {}).get("total_videos", 0)
+        # Bootstrap: allow publishing while building the initial catalog.
+        # With 0 classified videos the health score is ~2.25, but
+        # content_volume grows by 2 per publish. After 4 publishes
+        # (total_videos=4), content_volume=8 gives health=4.25 >= 4.0.
+        if total_videos < 4:
+            logger.info(
+                f"Bootstrap mode: {total_videos} videos, health={health}, "
+                f"allowing publish"
+            )
+            return False, ""
         if health < MIN_CHANNEL_HEALTH:
             return True, f"channel_health {health:.1f} < {MIN_CHANNEL_HEALTH}"
         return False, ""
     except Exception as e:
-        return True, f"channel_health check failed: {e}"
+        logger.warning(f"Channel health check failed: {e}")
+        return False, ""
 
 
 def _check_daily_publish_cap() -> tuple[bool, str]:
     """Check if the daily publish limit has been reached.
 
     Returns (blocked: bool, reason: str).
+    Uses is_successful_publish() as the single source of truth —
+    only real YouTube uploads (pipeline completed + video_id present + no error)
+    count toward the daily cap.
     """
     try:
         from mindmargin.analytics.memory import get_execution_log
@@ -274,7 +366,19 @@ def _check_daily_publish_cap() -> tuple[bool, str]:
         logs = get_execution_log(limit=50)
         recent = [l for l in logs
                   if l.get("executed_at", "") >= cutoff
-                  and l.get("pipeline_status") == "completed"]
+                  and is_successful_publish(l)]
+        logger.debug(
+            f"Daily cap check: cutoff={cutoff}, total_logs={len(logs)}, "
+            f"recent_successful={len(recent)}, cap={MAX_DAILY_PUBLISH}"
+        )
+        if recent:
+            for l in recent:
+                logger.debug(
+                    f"  counting: pipeline={l.get('pipeline_id', '?')} "
+                    f"topic={l.get('topic', '?')!r} "
+                    f"video_id={l.get('video_id', '')!r} "
+                    f"executed_at={l.get('executed_at', '?')}"
+                )
         if len(recent) >= MAX_DAILY_PUBLISH:
             return True, f"daily cap {MAX_DAILY_PUBLISH} reached ({len(recent)} published today)"
         return False, ""
@@ -283,7 +387,7 @@ def _check_daily_publish_cap() -> tuple[bool, str]:
         return False, ""
 
 
-def execute_top_decision(quick: bool = False, privacy: str = "private",
+def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
                          auto_publish: bool = True) -> dict:
     """Run one complete autonomous cycle: brain -> topic -> pipeline -> publish -> log.
 
@@ -339,6 +443,16 @@ def execute_top_decision(quick: bool = False, privacy: str = "private",
         cycle["steps"]["growth"] = {"status": "failed", "error": str(e)}
         growth = {}
 
+    # Step 2.5: Bootstrap intelligence if no opportunities exist yet
+    try:
+        from mindmargin.analytics.memory import get_top_opportunities
+        if not get_top_opportunities(1):
+            logger.info("No intelligence opportunities found — running on-demand scoring...")
+            from mindmargin.intelligence.scoring import run_opportunity_scoring
+            run_opportunity_scoring()
+    except Exception as e:
+        logger.warning(f"Intelligence bootstrap failed: {e}")
+
     # Step 3: Select topic
     logger.info("Selecting topic...")
     topic = select_topic(brain, growth)
@@ -377,6 +491,20 @@ def execute_top_decision(quick: bool = False, privacy: str = "private",
         cycle["min_confidence"] = MIN_CONFIDENCE
         return cycle
 
+    # Phase 5: Generate explanation for this decision
+    try:
+        from mindmargin.intelligence.explainer import explain_decision, format_explanation_markdown
+        from mindmargin.analytics.memory import get_top_opportunities
+        all_opps = get_top_opportunities(20)
+        selected_opp = next((o for o in all_opps if o.get("topic", "").lower() == topic.lower()), {})
+        alternatives = [o for o in all_opps if o.get("topic", "").lower() != topic.lower()]
+        explanation = explain_decision(selected_opp or {"topic": topic, "opportunity_score": 0, "confidence": 0}, alternatives[:5])
+        cycle["explanation"] = explanation
+        explanation_md = format_explanation_markdown(explanation)
+        logger.info(f"Decision explanation:\n{explanation_md}")
+    except Exception as e:
+        logger.warning(f"Explanation generation failed: {e}")
+
     # Step 4: Run content pipeline
     logger.info("Step 3/4: Running Content Pipeline...")
     try:
@@ -413,18 +541,21 @@ def execute_top_decision(quick: bool = False, privacy: str = "private",
     pub_video_id = ""
     pub_url = ""
     if auto_publish:
+        logger.info("Publish gate checks starting...")
         # Channel health gate
         health_blocked, health_reason = _check_channel_health()
         if health_blocked:
-            logger.warning(f"Channel health gate: {health_reason}")
+            logger.warning(f"Channel health gate BLOCKED: {health_reason}")
             cycle["steps"]["publish"] = {"status": "blocked", "reason": health_reason}
         else:
+            logger.info("Channel health gate: PASSED")
             # Daily publish cap
             cap_blocked, cap_reason = _check_daily_publish_cap()
             if cap_blocked:
-                logger.warning(f"Daily publish cap: {cap_reason}")
+                logger.warning(f"Daily publish cap BLOCKED: {cap_reason}")
                 cycle["steps"]["publish"] = {"status": "blocked", "reason": cap_reason}
             else:
+                logger.info("Daily publish cap: PASSED")
                 logger.info("Step 4/4: Publishing to YouTube...")
                 try:
                     pub_result = publish_video(topic, pipeline_id, pipe_result, privacy=privacy)
@@ -439,12 +570,24 @@ def execute_top_decision(quick: bool = False, privacy: str = "private",
                     cycle["steps"]["publish"] = {"status": "failed", "error": str(e)}
                     logger.error(f"Publish failed: {e}")
 
-    # Log execution
+    # Log execution with accurate error — only empty when a real upload occurred.
+    # is_successful_publish() checks bool(video_id), so blocked/skipped publishes
+    # are never counted toward the daily cap regardless of the error value.
+    log_error = "" if pub_video_id else (
+        "pipeline failed" if pipeline_status != "completed" else
+        "publish skipped (auto_publish=False)" if not auto_publish else
+        cycle["steps"].get("publish", {}).get("reason", "publish blocked or failed")
+    )
+    logger.info(
+        f"Logging execution: pipeline_id={pipeline_id} topic={topic!r} "
+        f"pipeline_status={pipeline_status} pub_video_id={pub_video_id!r} "
+        f"log_error={log_error!r}"
+    )
     log_execution(
         pipeline_id, topic,
         decision_domain, decision_action, decision_confidence,
         pipeline_status, pub_video_id, pub_url,
-        error="" if pipeline_status == "completed" else "pipeline failed",
+        error=log_error,
     )
 
     cycle["status"] = "completed"

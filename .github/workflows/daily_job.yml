@@ -2,23 +2,28 @@ name: MindMargin Daily Job
 
 on:
   schedule:
-    - cron: '0 21 * * *'
+    - cron: "0 21 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: daily-job
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -52,8 +57,8 @@ jobs:
 
       - name: Create output directories
         run: |
-          mkdir -p output
-          echo "output/ created"
+          mkdir -p output data
+          echo "Directories created"
 
       - name: Restore database cache
         uses: actions/cache/restore@v4
@@ -61,8 +66,45 @@ jobs:
         with:
           path: data/mindmargin.db
           key: mindmargin-db-${{ github.run_id }}
-          restore-keys: |
-            mindmargin-db-
+          restore-keys: mindmargin-db-
+
+      - name: Validate required secrets
+        run: |
+          ERRORS=0
+          if [ -z "${{ secrets.YOUTUBE_TOKEN_B64 }}" ]; then
+            echo "❌ MISSING SECRET: YOUTUBE_TOKEN_B64"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ -z "${{ secrets.ENV_FILE }}" ]; then
+            echo "❌ MISSING SECRET: ENV_FILE"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ -z "${{ secrets.CLIENT_SECRETS }}" ]; then
+            echo "❌ MISSING SECRET: CLIENT_SECRETS"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "  REQUIRED SECRETS MISSING"
+            echo "=========================================="
+            echo ""
+            echo "Go to: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo ""
+            echo "Required secrets:"
+            echo "  1. YOUTUBE_TOKEN_B64  — base64-encoded youtube_token.pickle"
+            echo "  2. ENV_FILE           — contents of .env file"
+            echo "  3. CLIENT_SECRETS     — contents of client_secrets.json"
+            echo ""
+            echo "Optional secrets:"
+            echo "  4. TELEGRAM_BOT_TOKEN — for failure notifications"
+            echo "  5. TELEGRAM_CHAT_ID   — for failure notifications"
+            echo ""
+            echo "See: GITHUB_SETUP.md for full setup instructions"
+            echo "=========================================="
+            exit 1
+          fi
+          echo "✅ All required secrets validated"
 
       - name: Restore secrets
         run: |
@@ -70,7 +112,7 @@ jobs:
           echo "${{ secrets.ENV_FILE }}" > .env
           echo "${{ secrets.CLIENT_SECRETS }}" > client_secrets.json
 
-      - name: Seed database with published videos
+      - name: Seed database
         env:
           PYTHONIOENCODING: utf-8
         run: python scripts/seed_db.py

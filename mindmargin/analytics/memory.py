@@ -231,6 +231,54 @@ def _init_schema(conn: sqlite3.Connection):
     conn.execute("DELETE FROM video_classifications WHERE id NOT IN (SELECT MIN(id) FROM video_classifications GROUP BY pipeline_id, video_id)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_vc_pipeline_video ON video_classifications(pipeline_id, video_id)")
 
+    # ── Intelligence Engine schema ──
+    for sql in _INTELLIGENCE_SCHEMA:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e):
+                logger.warning(f"Schema: {e}")
+
+    # ── Outcome Tracking schema ──
+    for sql in _OUTCOME_SCHEMA:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e):
+                logger.warning(f"Schema: {e}")
+
+    # ── Experiment Engine schema ──
+    for sql in _EXPERIMENT_SCHEMA:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e):
+                logger.warning(f"Schema: {e}")
+
+    # ── Weekly Planner schema ──
+    for sql in _WEEKLY_PLAN_SCHEMA:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e):
+                logger.warning(f"Schema: {e}")
+
+    # ── Knowledge Graph schema ──
+    for sql in _KNOWLEDGE_GRAPH_SCHEMA:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e):
+                logger.warning(f"Schema: {e}")
+
+    # ── Prediction Horizon schema ──
+    for sql in _PREDICTION_SCHEMA:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e):
+                logger.warning(f"Schema: {e}")
+
 
 def save_pipeline(pipeline_id: str, topic: str, mode: str = "documentary",
                   word_count: int = 0, video_duration_s: float = 0,
@@ -335,6 +383,16 @@ def update_hook_title_performance(pipeline_id: str, stats: dict) -> None:
         (actual_ctr, views, pipeline_id),
     )
     conn.commit()
+
+
+def get_analytics_history(limit: int = 200) -> list[dict]:
+    """Return recent analytics entries across all videos."""
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM analytics ORDER BY collected_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_video_analytics_from_db(video_id: str) -> dict | None:
@@ -1005,6 +1063,25 @@ def get_execution_log(limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def is_successful_publish(log: dict) -> bool:
+    """Canonical single source of truth: did this execution_log entry represent a real YouTube upload?
+
+    Returns True only when ALL three conditions hold:
+      1. pipeline_status == 'completed'   (the pipeline actually ran)
+      2. video_id is non-empty            (a real YouTube video was produced)
+      3. error is empty                   (no failure occurred)
+
+    Every call site in the codebase that needs to count a successful publish
+    MUST use this function.  Direct checks of log.get('error') == '' or
+    bool(log.get('video_id')) outside this function are forbidden unless
+    explicitly documented with a reason.
+    """
+    vid = log.get("video_id")
+    return (log.get("pipeline_status") == "completed"
+            and bool(vid.strip() if isinstance(vid, str) else vid)
+            and not log.get("error"))
+
+
 def mark_topic_published(child_topic: str) -> None:
     conn = _get_db()
     conn.execute(
@@ -1018,3 +1095,749 @@ def close():
     if hasattr(_local, "conn") and _local.conn:
         _local.conn.close()
         _local.conn = None
+
+
+# ════════════════════════════════════════════════════════════════
+# Intelligence Engine Schema & Memory Functions
+# ════════════════════════════════════════════════════════════════
+
+_EXPERIMENT_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS experiments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        experiment_id TEXT UNIQUE NOT NULL,
+        hypothesis TEXT NOT NULL,
+        experiment_type TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        variant_a TEXT NOT NULL,
+        variant_b TEXT NOT NULL,
+        expected_gain REAL DEFAULT 0,
+        affected_metric TEXT DEFAULT 'views',
+        confidence REAL DEFAULT 0,
+        status TEXT DEFAULT 'draft',
+        control_pipeline_id TEXT DEFAULT '',
+        treatment_pipeline_id TEXT DEFAULT '',
+        control_metric REAL DEFAULT 0,
+        treatment_metric REAL DEFAULT 0,
+        winner TEXT DEFAULT '',
+        statistical_confidence REAL DEFAULT 0,
+        sample_size INTEGER DEFAULT 0,
+        recommendation TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        completed_at TEXT
+    )""",
+]
+
+_WEEKLY_PLAN_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS weekly_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_start TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""",
+]
+
+_KNOWLEDGE_GRAPH_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS topic_keywords (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        weight REAL DEFAULT 1.0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(topic, keyword)
+    )""",
+    """CREATE TABLE IF NOT EXISTS topic_relationships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_topic TEXT NOT NULL,
+        target_topic TEXT NOT NULL,
+        relationship_type TEXT DEFAULT 'related',
+        strength REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(source_topic, target_topic)
+    )""",
+    """CREATE TABLE IF NOT EXISTS audience_topics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT NOT NULL,
+        audience_overlap REAL DEFAULT 0,
+        engagement_affinity REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(topic)
+    )""",
+]
+
+_PREDICTION_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS prediction_forecasts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT NOT NULL,
+        forecast_date TEXT NOT NULL,
+        window_days INTEGER NOT NULL,
+        expected_score REAL DEFAULT 0,
+        confidence REAL DEFAULT 0,
+        uncertainty REAL DEFAULT 0,
+        trend_momentum REAL DEFAULT 0,
+        base_score REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(topic, forecast_date, window_days)
+    )""",
+]
+
+_OUTCOME_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS decision_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT NOT NULL,
+        pipeline_id TEXT NOT NULL,
+        opportunity_score REAL DEFAULT 0,
+        actual_score REAL DEFAULT 0,
+        prediction_error REAL DEFAULT 0,
+        views INTEGER DEFAULT 0,
+        ctr REAL DEFAULT 0,
+        watch_time_s REAL DEFAULT 0,
+        retention REAL DEFAULT 0,
+        engagement_rate REAL DEFAULT 0,
+        source TEXT DEFAULT '',
+        scored_at TEXT,
+        outcome_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(topic, pipeline_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS prediction_errors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        outcome_id INTEGER NOT NULL,
+        component TEXT NOT NULL,
+        weight REAL DEFAULT 0,
+        component_score REAL DEFAULT 0,
+        actual_contribution REAL DEFAULT 0,
+        error REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (outcome_id) REFERENCES decision_outcomes(id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS scoring_weights (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        component TEXT UNIQUE NOT NULL,
+        weight REAL NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+    )""",
+]
+
+_INTELLIGENCE_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS trend_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        trend_score REAL DEFAULT 0,
+        competition REAL DEFAULT 0,
+        novelty REAL DEFAULT 0,
+        seasonality REAL DEFAULT 0,
+        confidence REAL DEFAULT 0,
+        raw_data TEXT DEFAULT '',
+        collected_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(source, topic)
+    )""",
+    """CREATE TABLE IF NOT EXISTS channel_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pipeline_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        topic_hash TEXT NOT NULL,
+        title TEXT DEFAULT '',
+        hook TEXT DEFAULT '',
+        thumbnail_style TEXT DEFAULT '',
+        narrative_style TEXT DEFAULT '',
+        keywords TEXT DEFAULT '',
+        performance_score REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(pipeline_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS intelligence_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        score REAL DEFAULT 0,
+        sample_size INTEGER DEFAULT 1,
+        confidence REAL DEFAULT 0,
+        dynamic INTEGER DEFAULT 1,
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(category, key)
+    )""",
+    """CREATE TABLE IF NOT EXISTS daily_strategies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_date TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS weekly_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_start TEXT NOT NULL,
+        week_end TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS opportunity_scores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT UNIQUE NOT NULL,
+        source TEXT DEFAULT '',
+        opportunity_score REAL DEFAULT 0,
+        trend_score REAL DEFAULT 0,
+        competition REAL DEFAULT 0,
+        novelty REAL DEFAULT 0,
+        seasonality REAL DEFAULT 0,
+        audience_match REAL DEFAULT 0,
+        evergreen_score REAL DEFAULT 0,
+        historical_performance REAL DEFAULT 0,
+        confidence REAL DEFAULT 0,
+        scored_at TEXT DEFAULT (datetime('now'))
+    )""",
+]
+
+
+# ── Trend Sources ──
+
+def save_trend_source(source: str, topic: str, trend_score: float = 0,
+                       competition: float = 0, novelty: float = 0,
+                       seasonality: float = 0, confidence: float = 0,
+                       raw_data: str = "") -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO trend_sources (source, topic, trend_score, competition, novelty,
+                                    seasonality, confidence, raw_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, topic) DO UPDATE SET
+            trend_score=excluded.trend_score, competition=excluded.competition,
+            novelty=excluded.novelty, seasonality=excluded.seasonality,
+            confidence=excluded.confidence, raw_data=excluded.raw_data,
+            collected_at=datetime('now')
+    """, (source, topic, trend_score, competition, novelty,
+          seasonality, confidence, raw_data))
+    conn.commit()
+
+
+def get_trend_sources(limit: int = 50, min_confidence: float = 0.0) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM trend_sources
+        WHERE confidence >= ?
+        ORDER BY trend_score DESC
+        LIMIT ?
+    """, (min_confidence, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Channel Memory ──
+
+def save_channel_memory(pipeline_id: str, topic: str, topic_hash: str,
+                         title: str = "", hook: str = "",
+                         thumbnail_style: str = "", narrative_style: str = "",
+                         keywords: str = "", performance_score: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO channel_memory (pipeline_id, topic, topic_hash, title, hook,
+                                     thumbnail_style, narrative_style, keywords,
+                                     performance_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(pipeline_id) DO UPDATE SET
+            topic=excluded.topic, topic_hash=excluded.topic_hash,
+            title=excluded.title, hook=excluded.hook,
+            thumbnail_style=excluded.thumbnail_style,
+            narrative_style=excluded.narrative_style,
+            keywords=excluded.keywords,
+            performance_score=excluded.performance_score
+    """, (pipeline_id, topic, topic_hash, title, hook,
+          thumbnail_style, narrative_style, keywords, performance_score))
+    conn.commit()
+
+
+def get_channel_memory(limit: int = 100) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM channel_memory ORDER BY created_at DESC LIMIT ?
+    """, (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_memory_topic_hashes() -> set[str]:
+    conn = _get_db()
+    rows = conn.execute("SELECT topic_hash FROM channel_memory").fetchall()
+    return {r["topic_hash"] for r in rows}
+
+
+# ── Intelligence Rules ──
+
+def save_intelligence_rule(category: str, key: str, value: str,
+                            score: float = 0, sample_size: int = 1,
+                            confidence: float = 0, dynamic: bool = True) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO intelligence_rules (category, key, value, score, sample_size,
+                                         confidence, dynamic)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(category, key) DO UPDATE SET
+            value=excluded.value, score=excluded.score,
+            sample_size=excluded.sample_size, confidence=excluded.confidence,
+            dynamic=excluded.dynamic, updated_at=datetime('now')
+    """, (category, key, value, score, sample_size, confidence, int(dynamic)))
+    conn.commit()
+
+
+def get_intelligence_rules(category: str = "", min_confidence: float = 0) -> list[dict]:
+    conn = _get_db()
+    if category:
+        rows = conn.execute("""
+            SELECT * FROM intelligence_rules
+            WHERE category = ? AND confidence >= ?
+            ORDER BY score DESC
+        """, (category, min_confidence)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT * FROM intelligence_rules WHERE confidence >= ?
+            ORDER BY score DESC
+        """, (min_confidence,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_intelligence_rules() -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM intelligence_rules ORDER BY category, score DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Daily Strategies ──
+
+def save_daily_strategy(strategy_date: str, data: dict) -> None:
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO daily_strategies (strategy_date, data) VALUES (?, ?)",
+        (strategy_date, json.dumps(data, default=str))
+    )
+    conn.commit()
+
+
+def get_daily_strategies(limit: int = 7) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM daily_strategies ORDER BY strategy_date DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["data"] = json.loads(d["data"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        result.append(d)
+    return result
+
+
+# ── Weekly Reports ──
+
+def save_weekly_report(week_start: str, week_end: str, data: dict) -> None:
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO weekly_reports (week_start, week_end, data) VALUES (?, ?, ?)",
+        (week_start, week_end, json.dumps(data, default=str))
+    )
+    conn.commit()
+
+
+def get_weekly_reports(limit: int = 4) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM weekly_reports ORDER BY week_start DESC LIMIT ?", (limit,)
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["data"] = json.loads(d["data"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        result.append(d)
+    return result
+
+
+# ── Opportunity Scores ──
+
+def save_opportunity(topic: str, source: str = "", opportunity_score: float = 0,
+                      trend_score: float = 0, competition: float = 0,
+                      novelty: float = 0, seasonality: float = 0,
+                      audience_match: float = 0, evergreen_score: float = 0,
+                      historical_performance: float = 0, confidence: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO opportunity_scores (topic, source, opportunity_score, trend_score,
+                                         competition, novelty, seasonality,
+                                         audience_match, evergreen_score,
+                                         historical_performance, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(topic) DO UPDATE SET
+            source=excluded.source, opportunity_score=excluded.opportunity_score,
+            trend_score=excluded.trend_score, competition=excluded.competition,
+            novelty=excluded.novelty, seasonality=excluded.seasonality,
+            audience_match=excluded.audience_match,
+            evergreen_score=excluded.evergreen_score,
+            historical_performance=excluded.historical_performance,
+            confidence=excluded.confidence,
+            scored_at=datetime('now')
+    """, (topic, source, opportunity_score, trend_score, competition,
+          novelty, seasonality, audience_match, evergreen_score,
+          historical_performance, confidence))
+    conn.commit()
+
+
+def get_opportunities(min_score: float = 0, limit: int = 50) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM opportunity_scores
+        WHERE opportunity_score >= ?
+        ORDER BY opportunity_score DESC
+        LIMIT ?
+    """, (min_score, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_top_opportunities(n: int = 20) -> list[dict]:
+    return get_opportunities(min_score=0, limit=n)
+
+
+# ── Outcome Tracking ──
+
+def save_outcome(topic: str, pipeline_id: str, opportunity_score: float,
+                 actual_score: float, prediction_error: float,
+                 views: int = 0, ctr: float = 0, watch_time_s: float = 0,
+                 retention: float = 0, engagement_rate: float = 0,
+                 source: str = "", scored_at: str = "",
+                 outcome_at: str = "") -> int:
+    conn = _get_db()
+    cur = conn.execute("""
+        INSERT INTO decision_outcomes
+            (topic, pipeline_id, opportunity_score, actual_score, prediction_error,
+             views, ctr, watch_time_s, retention, engagement_rate,
+             source, scored_at, outcome_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(topic, pipeline_id) DO UPDATE SET
+            actual_score=excluded.actual_score,
+            prediction_error=excluded.prediction_error,
+            views=excluded.views, ctr=excluded.ctr,
+            watch_time_s=excluded.watch_time_s, retention=excluded.retention,
+            engagement_rate=excluded.engagement_rate,
+            outcome_at=excluded.outcome_at
+    """, (topic, pipeline_id, opportunity_score, actual_score, prediction_error,
+          views, ctr, watch_time_s, retention, engagement_rate,
+          source, scored_at, outcome_at))
+    conn.commit()
+    return cur.lastrowid or 0
+
+
+def get_outcomes(limit: int = 100, min_error: float | None = None) -> list[dict]:
+    conn = _get_db()
+    query = "SELECT * FROM decision_outcomes"
+    params: list = []
+    if min_error is not None:
+        query += " WHERE ABS(prediction_error) >= ?"
+        params.append(min_error)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_prediction_error(outcome_id: int, component: str, weight: float,
+                           component_score: float, actual_contribution: float,
+                           error: float) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO prediction_errors
+            (outcome_id, component, weight, component_score,
+             actual_contribution, error)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (outcome_id, component, weight, component_score,
+          actual_contribution, error))
+    conn.commit()
+
+
+def get_prediction_errors(outcome_id: int | None = None,
+                           component: str | None = None,
+                           limit: int = 500) -> list[dict]:
+    conn = _get_db()
+    clauses = []
+    params: list = []
+    if outcome_id is not None:
+        clauses.append("outcome_id=?")
+        params.append(outcome_id)
+    if component is not None:
+        clauses.append("component=?")
+        params.append(component)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM prediction_errors {where} ORDER BY created_at DESC LIMIT ?",
+        [*params, limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Dynamic Scoring Weights ──
+
+def get_scoring_weights() -> dict[str, float]:
+    conn = _get_db()
+    rows = conn.execute("SELECT component, weight FROM scoring_weights").fetchall()
+    return {r["component"]: r["weight"] for r in rows}
+
+
+def set_scoring_weight(component: str, weight: float) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO scoring_weights (component, weight, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(component) DO UPDATE SET
+            weight=excluded.weight, updated_at=datetime('now')
+    """, (component, weight))
+    conn.commit()
+
+
+def reset_scoring_weights(weights: dict[str, float]) -> None:
+    conn = _get_db()
+    for component, weight in weights.items():
+        conn.execute("""
+            INSERT INTO scoring_weights (component, weight, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(component) DO UPDATE SET
+                weight=excluded.weight, updated_at=datetime('now')
+        """, (component, weight))
+    conn.commit()
+
+
+def get_weight_history(limit: int = 50) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM scoring_weights ORDER BY updated_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Experiment Engine (Phase 3) ──
+
+def save_experiment(experiment_id: str, hypothesis: str, experiment_type: str,
+                     topic: str, variant_a: str, variant_b: str,
+                     expected_gain: float = 0, affected_metric: str = "views",
+                     confidence: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO experiments
+            (experiment_id, hypothesis, experiment_type, topic,
+             variant_a, variant_b, expected_gain, affected_metric, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (experiment_id, hypothesis, experiment_type, topic,
+          variant_a, variant_b, expected_gain, affected_metric, confidence))
+    conn.commit()
+
+
+def get_experiment(experiment_id: str) -> dict | None:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM experiments WHERE experiment_id=?",
+        (experiment_id,),
+    ).fetchall()
+    return dict(rows[0]) if rows else None
+
+
+def get_experiments(experiment_type: str = "", status: str = "",
+                     limit: int = 50) -> list[dict]:
+    conn = _get_db()
+    clauses = []
+    params: list = []
+    if experiment_type:
+        clauses.append("experiment_type=?")
+        params.append(experiment_type)
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM experiments {where} ORDER BY created_at DESC LIMIT ?",
+        [*params, limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def complete_experiment(experiment_id: str, winner: str,
+                         statistical_confidence: float = 0,
+                         sample_size: int = 0, recommendation: str = "",
+                         control_metric: float = 0,
+                         treatment_metric: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        UPDATE experiments SET status='completed', winner=?, statistical_confidence=?,
+            sample_size=?, recommendation=?, control_metric=?, treatment_metric=?,
+            completed_at=datetime('now')
+        WHERE experiment_id=?
+    """, (winner, statistical_confidence, sample_size, recommendation,
+          control_metric, treatment_metric, experiment_id))
+    conn.commit()
+
+
+def activate_experiment(experiment_id: str, control_pipeline_id: str,
+                         treatment_pipeline_id: str) -> None:
+    conn = _get_db()
+    conn.execute("""
+        UPDATE experiments SET status='active',
+            control_pipeline_id=?, treatment_pipeline_id=?
+        WHERE experiment_id=?
+    """, (control_pipeline_id, treatment_pipeline_id, experiment_id))
+    conn.commit()
+
+
+def get_active_experiments(limit: int = 20) -> list[dict]:
+    return get_experiments(status="active", limit=limit)
+
+
+# ── Weekly Planner (Phase 6) ──
+
+def save_weekly_plan(week_start: str, data: dict) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO weekly_plans (week_start, data)
+        VALUES (?, ?)
+    """, (week_start, json.dumps(data)))
+    conn.commit()
+
+
+def get_weekly_plans(limit: int = 4) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM weekly_plans ORDER BY week_start DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["data"] = json.loads(d["data"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        result.append(d)
+    return result
+
+
+# ── Knowledge Graph (Phase 7) ──
+
+def save_topic_keyword(topic: str, keyword: str, weight: float = 1.0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO topic_keywords (topic, keyword, weight)
+        VALUES (?, ?, ?)
+    """, (topic, keyword, weight))
+    conn.commit()
+
+
+def get_topic_keywords(topic: str = "", limit: int = 100) -> list[dict]:
+    conn = _get_db()
+    if topic:
+        rows = conn.execute(
+            "SELECT * FROM topic_keywords WHERE topic=? ORDER BY weight DESC LIMIT ?",
+            (topic, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM topic_keywords ORDER BY weight DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_topic_relationship(source_topic: str, target_topic: str,
+                             relationship_type: str = "related",
+                             strength: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO topic_relationships
+            (source_topic, target_topic, relationship_type, strength)
+        VALUES (?, ?, ?, ?)
+    """, (source_topic, target_topic, relationship_type, strength))
+    conn.commit()
+
+
+def get_topic_relationships(topic: str = "", relationship_type: str = "",
+                             limit: int = 100) -> list[dict]:
+    conn = _get_db()
+    clauses = []
+    params: list = []
+    if topic:
+        clauses.append("(source_topic=? OR target_topic=?)")
+        params.extend([topic, topic])
+    if relationship_type:
+        clauses.append("relationship_type=?")
+        params.append(relationship_type)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM topic_relationships {where} ORDER BY strength DESC LIMIT ?",
+        [*params, limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_audience_topic(topic: str, audience_overlap: float = 0,
+                         engagement_affinity: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO audience_topics
+            (topic, audience_overlap, engagement_affinity)
+        VALUES (?, ?, ?)
+    """, (topic, audience_overlap, engagement_affinity))
+    conn.commit()
+
+
+def get_audience_topics(limit: int = 100) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT * FROM audience_topics ORDER BY engagement_affinity DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Prediction Horizon (Phase 8) ──
+
+def save_forecast(topic: str, forecast_date: str, window_days: int,
+                   expected_score: float, confidence: float = 0,
+                   uncertainty: float = 0, trend_momentum: float = 0,
+                   base_score: float = 0) -> None:
+    conn = _get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO prediction_forecasts
+            (topic, forecast_date, window_days, expected_score, confidence,
+             uncertainty, trend_momentum, base_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (topic, forecast_date, window_days, expected_score, confidence,
+          uncertainty, trend_momentum, base_score))
+    conn.commit()
+
+
+def get_forecasts(topic: str = "", window_days: int = 0,
+                   limit: int = 100) -> list[dict]:
+    conn = _get_db()
+    clauses = []
+    params: list = []
+    if topic:
+        clauses.append("topic=?")
+        params.append(topic)
+    if window_days > 0:
+        clauses.append("window_days=?")
+        params.append(window_days)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM prediction_forecasts {where} ORDER BY created_at DESC LIMIT ?",
+        [*params, limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_forecasts(window_days: int = 7) -> list[dict]:
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT * FROM prediction_forecasts
+        WHERE window_days=? AND forecast_date=date('now')
+        ORDER BY expected_score DESC LIMIT 20
+    """, (window_days,)).fetchall()
+    return [dict(r) for r in rows]
