@@ -31,7 +31,8 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg ca-certificates
+          sudo update-ca-certificates --fresh
 
       - name: Install Ollama & pull model
         run: |
