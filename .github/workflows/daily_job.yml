@@ -25,6 +25,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify Node.js
+        run: node -v
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 

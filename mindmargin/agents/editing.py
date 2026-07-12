@@ -9,6 +9,7 @@ from typing import Optional
 from mindmargin.config import settings
 from mindmargin.core.storage import ensure_dirs, write_text
 from mindmargin.utils import ffmpeg
+from mindmargin.utils.hyperframes import hyperframes_available, render_full_composition
 from mindmargin.agents.script import validate_scene_plan
 
 logger = logging.getLogger(__name__)
@@ -56,33 +57,42 @@ class EditingAgent:
         dirs = ensure_dirs(topic, pipeline_id)
         progress = self._load_progress(pipeline_id)
 
-        # Stage 1: render all section clips (parallel + resumable)
-        self._profile_stage("section_rendering")
-        clips = self._render_sections(pipeline_id, sections, voice_segments,
-                                       duration_scale, dirs, progress)
-        self._profile_stage_end("section_rendering", len(clips))
+        clips: list[Path] = []
 
-        if clips is None:
-            return self._error("section rendering failed", dirs)
+        # Stage 1: try HyperFrames composition (optional enhancement)
+        self._profile_stage("hyperframes_composition")
+        raw_video = self._try_hyperframes(pipeline_id, sections, voice_segments,
+                                          duration_scale, dirs, progress)
+        self._profile_stage_end("hyperframes_composition")
 
-        # Stage 2: concat all clips into raw video
-        self._profile_stage("concat_video")
-        raw_video = self._concat_video(clips, pipeline_id, dirs, progress)
         if not raw_video:
-            return self._error("concat_video failed", dirs)
-        self._profile_stage_end("concat_video")
+            # Fallback: Stage 2 — render all section clips (parallel + resumable)
+            self._profile_stage("section_rendering")
+            clips = self._render_sections(pipeline_id, sections, voice_segments,
+                                           duration_scale, dirs, progress)
+            self._profile_stage_end("section_rendering", len(clips))
 
-        # Stage 3: concat audio
+            if clips is None:
+                return self._error("section rendering failed", dirs)
+
+            # Stage 3: concat all clips into raw video
+            self._profile_stage("concat_video")
+            raw_video = self._concat_video(clips, pipeline_id, dirs, progress)
+            if not raw_video:
+                return self._error("concat_video failed", dirs)
+            self._profile_stage_end("concat_video")
+
+        # Audio concat
         self._profile_stage("concat_audio")
         audio_file = self._concat_audio(voice_segments, dirs)
         self._profile_stage_end("concat_audio")
 
-        # Stage 4: generate subtitles
+        # Generate subtitles
         self._profile_stage("subtitles")
         srt_path = self._generate_subtitles(sections, voice_segments, dirs)
         self._profile_stage_end("subtitles")
 
-        # Stage 5: final merge (audio + subs)
+        # Final merge (audio + subs)
         self._profile_stage("final_merge")
         final = self._final_merge(raw_video, audio_file, srt_path, pipeline_id, dirs, progress)
         if not final:
@@ -105,7 +115,60 @@ class EditingAgent:
             "manifest": manifest,
         }
 
-    # ── Stage 1: parallel section rendering ──
+    # ── Stage 1: optional HyperFrames composition ──
+
+    def _try_hyperframes(self, pipeline_id: str, sections: list[dict],
+                           voice_segments: list[dict], duration_scale: float,
+                           dirs: dict, progress: dict) -> Optional[Path]:
+        """Try rendering the full video via HyperFrames. Returns raw_video Path or None."""
+        progress_entry = progress.setdefault("hyperframes", {})
+        if progress_entry.get("status") == "completed" and not self.force:
+            path = progress_entry.get("path", "")
+            if path and Path(path).exists():
+                logger.info("Skip hyperframes (already completed)")
+                return Path(path)
+
+        if not hyperframes_available():
+            logger.info("HyperFrames not available, using FFmpeg")
+            self._record_event("hyperframes", "skipped", "not_available")
+            return None
+
+        raw_video = dirs["video"] / f"{pipeline_id}_raw.mp4"
+        import time as _time
+        start = _time.time()
+
+        result = render_full_composition(
+            sections=sections,
+            voice_segments=voice_segments,
+            duration_scale=duration_scale,
+            output_path=str(raw_video),
+            work_dir=str(dirs["temp"] / "hyperframes"),
+        )
+
+        elapsed = _time.time() - start
+        if result:
+            progress_entry["status"] = "completed"
+            progress_entry["path"] = str(result)
+            progress_entry["duration_s"] = round(elapsed, 2)
+            self._save_progress(pipeline_id, {"hyperframes": progress_entry})
+            logger.info(f"HyperFrames composition: {elapsed:.1f}s")
+            self._record_event("hyperframes", "completed", f"{elapsed:.1f}s")
+            return result
+
+        logger.warning(f"HyperFrames composition failed ({elapsed:.1f}s), falling back to FFmpeg")
+        self._record_event("hyperframes", "failed", f"{elapsed:.1f}s")
+        progress_entry["status"] = "failed"
+        self._save_progress(pipeline_id, {"hyperframes": progress_entry})
+        return None
+
+    def _record_event(self, *args, **kwargs):
+        try:
+            from mindmargin.analytics.monitoring import record_event
+            record_event(*args, **kwargs)
+        except Exception:
+            pass
+
+    # ── Stage 2: parallel section rendering (fallback) ──
 
     def _render_sections(self, pipeline_id: str, sections: list[dict],
                           voice_segments: list[dict], duration_scale: float,
