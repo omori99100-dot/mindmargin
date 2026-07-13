@@ -38,9 +38,7 @@ TRANSITION_MOOD = {
 
 def hyperframes_available() -> bool:
     try:
-        npx = os.path.join(os.environ.get("PROGRAMFILES", ""), "nodejs", "npx.cmd")
-        if not os.path.isfile(npx):
-            npx = "npx.cmd"
+        npx = _find_npx()
         proc = subprocess.run(
             [npx, "--yes", "hyperframes", "--version"],
             capture_output=True, timeout=120, text=True,
