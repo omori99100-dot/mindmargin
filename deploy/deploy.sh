@@ -46,8 +46,26 @@ cmd_dev() {
 
 cmd_staging() {
     echo "Starting staging environment..."
+
+    local staging_root="${MINDMARGIN_STAGING_ROOT:-$REPO_ROOT/.runtime/staging}"
+    if [[ "$staging_root" != /* ]]; then
+        staging_root="$REPO_ROOT/$staging_root"
+    fi
+    staging_root="$(mkdir -p "$staging_root" && cd "$staging_root" && pwd)"
+
+    # Fail closed: staging storage must not equal, contain, or be contained by
+    # the repository/production storage roots.
+    for protected_root in "$REPO_ROOT" "$REPO_ROOT/data" "$REPO_ROOT/output"; do
+        if [[ "$staging_root" == "$protected_root" || "$staging_root" == "$protected_root/"* || "$protected_root" == "$staging_root/"* ]]; then
+            echo "❌ Unsafe staging root overlaps protected root: $staging_root" >&2
+            return 1
+        fi
+    done
+
+    mkdir -p "$staging_root/data" "$staging_root/output"
+    echo "Using isolated staging root: $staging_root"
     cd "$DEPLOY_DIR"
-    docker compose -f docker-compose.staging.yml up -d --build
+    MINDMARGIN_STAGING_ROOT="$staging_root" docker compose -p mindmargin-staging -f docker-compose.staging.yml up -d --build
     echo "✅ Staging environment started"
 }
 

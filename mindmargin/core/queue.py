@@ -149,9 +149,9 @@ class DeadLetterQueue:
         return self._path / f"{item.queue_id}.json"
 
     def _save(self, item: QueueItem):
-        self._path_for(item).write_text(
-            json.dumps(item.to_dict(), indent=2), encoding="utf-8"
-        )
+        path = self._path_for(item)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(item.to_dict(), indent=2), encoding="utf-8")
 
     def _delete(self, item: QueueItem):
         p = self._path_for(item)
@@ -411,9 +411,9 @@ class Queue:
         return self._persist_dir / f"{item.queue_id}.json"
 
     def _save(self, item: QueueItem):
-        self._path_for(item).write_text(
-            json.dumps(item.to_dict(), indent=2), encoding="utf-8"
-        )
+        path = self._path_for(item)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(item.to_dict(), indent=2), encoding="utf-8")
 
     def _delete(self, item: QueueItem):
         p = self._path_for(item)

@@ -5,6 +5,7 @@ Orchestrates the autonomous cycle:
 """
 import logging
 import sys
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -34,81 +35,94 @@ _TOPIC_DOMAINS = [
 ]
 
 
-def select_topic(brain_report: dict, growth_report: dict) -> str:
-    """Select the highest-ranked actionable topic.
+def select_topic(brain_report: dict, growth_report: dict, pipeline_id: str = "") -> str:
+    """Select and persist the highest-ranked actionable topic decision.
 
-    Selection chain (intelligence-first):
-      1. Top opportunity from intelligence engine (via opportunity_scores table)
-      2. Brain's top topic (from _prioritize_topics)
-      3. Growth engine's top recommendation
-      4. Highest-confidence unpublished topic lineage
-      5. First available topic domain
+    The return type remains ``str`` for backward compatibility. Phase B records
+    the real alternatives, scores, evidence, rationale, and selected option in
+    the lineage ledger without invoking another model or changing ranking logic.
     """
-    # Step 1: Intelligence engine — highest-scored unpublished opportunity
+    from mindmargin.intelligence.instrumentation import record_decision, record_event
+
+    candidates: list[dict] = []
+
+    def choose(topic: str, source: str, rationale: str, confidence: float = 0.0) -> str:
+        options = candidates or [{"option": topic, "score": 0.0, "source": source}]
+        decision = record_decision(
+            "topic_selection",
+            pipeline_id=pipeline_id,
+            context={"selection_source": source},
+            options=options,
+            selected_option=topic,
+            rationale=rationale,
+            confidence=float(confidence or 0.0),
+            evidence=[{"source": option.get("source", source), "score": option.get("score", 0)} for option in options],
+            expected_outcome={"metric": "retention_3s", "direction": "increase"} if confidence else None,
+            source="agents.decision_executor.select_topic",
+            correlation_id=pipeline_id,
+        )
+        record_event("decision.topic_selected", pipeline_id, stage="topic_selection", reason=rationale, decision_id=decision.get("decision_id", ""), metadata={"selected_option": topic})
+        return topic
+
+    # Step 1: intelligence opportunities
     try:
         from mindmargin.analytics.memory import get_top_opportunities, get_execution_log
         opportunities = get_top_opportunities(20)
-        if opportunities:
-            published_topics = set()
-            for log in get_execution_log(100):
-                if log.get("error", ""):
-                    continue  # skip failed executions — allow retry
-                t = (log.get("topic") or "").strip().lower()
-                if t:
-                    published_topics.add(t)
-            logger.debug(f"Published topics (error-free): {published_topics}")
-            for opp in opportunities:
-                t = (opp.get("topic") or "").strip()
-                if t and t.lower() not in published_topics:
-                    logger.info(f"Topic from intelligence: '{t}' "
-                                f"(score={opp.get('opportunity_score', 0):.1f})")
-                    return t
-            logger.info("All intelligence opportunities already published, falling through")
-    except Exception as e:
-        logger.warning(f"Intelligence topic selection failed: {e}")
+        published_topics = {
+            (log.get("topic") or "").strip().lower()
+            for log in get_execution_log(100) if not log.get("error", "") and log.get("topic")
+        }
+        candidates = [
+            {"option": (opp.get("topic") or "").strip(), "score": opp.get("opportunity_score", 0),
+             "confidence": opp.get("confidence", 0), "source": "opportunity_scores"}
+            for opp in opportunities if (opp.get("topic") or "").strip()
+        ]
+        for option in candidates:
+            if option["option"].lower() not in published_topics:
+                logger.info("Topic from intelligence: '%s' (score=%.1f)", option["option"], option["score"])
+                return choose(option["option"], "opportunity_scores", "highest scored unpublished opportunity", option.get("confidence", 0))
+    except Exception as exc:
+        logger.warning("Intelligence topic selection failed: %s", exc)
 
-    # Step 2: Brain's top topic
     topic = (brain_report.get("top_topic") or "").strip()
     if topic:
-        logger.info(f"Topic from brain: '{topic}'")
-        return topic
+        candidates = [{"option": topic, "score": brain_report.get("topic_score", 0), "source": "channel_brain"}]
+        return choose(topic, "channel_brain", "brain top topic fallback", brain_report.get("confidence", 0))
 
-    # Step 3: Growth engine's top recommendation
     top_recs = growth_report.get("top_recommendations") or []
     if top_recs:
-        t = (top_recs[0] or "").strip()
-        if t:
-            logger.info(f"Topic from growth engine: '{t}'")
-            return t
+        topic = (top_recs[0] or "").strip()
+        if topic:
+            candidates = [{"option": item, "score": len(top_recs) - index, "source": "growth_engine"} for index, item in enumerate(top_recs) if item]
+            return choose(topic, "growth_engine", "top growth recommendation fallback")
 
-    # Step 4: Unpublished lineage with best inheritance
     lineages = get_topic_lineages(limit=50)
-    unpublished = [l for l in lineages if not l.get("is_published")]
+    unpublished = [lineage for lineage in lineages if not lineage.get("is_published")]
     if unpublished:
-        best = max(unpublished, key=lambda l: l.get("performance_inheritance", 0) or 0)
-        t = (best.get("child_topic") or "").strip()
-        if t:
-            logger.info(f"Topic from lineage: '{t}' (inherit={best.get('performance_inheritance', 0):.2f})")
-            return t
+        best = max(unpublished, key=lambda item: item.get("performance_inheritance", 0) or 0)
+        topic = (best.get("child_topic") or "").strip()
+        if topic:
+            candidates = [{"option": item.get("child_topic", ""), "score": item.get("performance_inheritance", 0), "source": "topic_lineage"} for item in unpublished]
+            return choose(topic, "topic_lineage", "highest performance inheritance among unpublished descendants", best.get("performance_inheritance", 0))
 
-    # Step 5: First available domain
-    t = _TOPIC_DOMAINS[0]
-    logger.info(f"Fallback topic: '{t}'")
-    return t
+    topic = _TOPIC_DOMAINS[0]
+    return choose(topic, "fallback_domain", "no scored unpublished candidate was available")
 
 
 def execute_pipeline(topic: str, quick: bool = False,
-                     editing_timeout: int | None = None) -> dict:
+                     editing_timeout: int | None = None, pipeline_id: str | None = None) -> dict:
     """Run the content generation pipeline for a given topic."""
     scale = 0.1 if quick else 1.0
-    pipe = Pipeline(topic=topic, duration_scale=scale,
-                    editing_timeout=editing_timeout)
+    pipeline_kwargs = {"topic": topic, "duration_scale": scale, "editing_timeout": editing_timeout}
+    if pipeline_id is not None:
+        pipeline_kwargs["pipeline_id"] = pipeline_id
+    pipe = Pipeline(**pipeline_kwargs)
     result = pipe.run()
     return result
 
 
 def publish_video(topic: str, pipeline_id: str, result: dict,
-                  privacy: str = "unlisted") -> dict:
+                  privacy: str = "unlisted", playlist_id: str | None = None) -> dict:
     """Publish a completed pipeline's video to YouTube."""
     import time as _time
     from mindmargin.integrations.youtube import check_credentials, upload_video
@@ -119,6 +133,27 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
     import json as _json
 
     _pub_start = _time.time()
+    from mindmargin.intelligence.instrumentation import record_decision, record_event
+
+    def publish_decision(status: str, rationale: str, *, selected: str = "", evidence: list[dict] | None = None, failure_reason: str = "", video_id: str = "", publish_id: str = "", actual_outcome: dict | None = None):
+        return record_decision(
+            "publish_eligibility" if status in {"blocked", "skipped"} else "publish",
+            pipeline_id=pipeline_id,
+            context={"privacy": privacy, "topic": topic, "status": status},
+            options=[{"option": "publish"}, {"option": "skip"}, {"option": "retry"}],
+            selected_option=selected or status,
+            rationale=rationale,
+            confidence=1.0 if status in {"completed", "blocked", "skipped"} else 0.0,
+            evidence=evidence or [],
+            actual_outcome=actual_outcome or {},
+            video_id=video_id,
+            publish_id=pipeline_id,
+            source="agents.decision_executor.publish_video",
+            status="failed" if failure_reason else "completed",
+            failure_reason=failure_reason,
+            idempotency_key=f"{pipeline_id}:publish:{status}:{failure_reason or selected or status}",
+            correlation_id=pipeline_id,
+        )
 
     # ── Fast-fail: validate YouTube credentials before any work ──
     creds = check_credentials()
@@ -129,6 +164,8 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
             f"   Fix: Ensure client_secrets.json and youtube_token.pickle exist.\n"
             f"   See: GITHUB_SETUP.md for OAuth setup instructions."
         )
+        publish_decision("blocked", "YouTube credentials are not authenticated", selected="skip", failure_reason=error_msg)
+        record_event("publish.blocked", pipeline_id, stage="publish", reason=error_msg)
         return {"status": "failed", "error": f"YouTube auth failed: {error_msg}"}
 
     # ── Duplicate publish protection ──
@@ -142,6 +179,8 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
             if existing:
                 logger.info(f"Duplicate protection: pipeline {pipeline_id} already published as "
                            f"{existing['youtube_video_id']}, skipping upload")
+                publish_decision("skipped", "existing durable YouTube video found; duplicate upload prevented", selected="skip", video_id=existing["youtube_video_id"], publish_id=pipeline_id)
+                record_event("publish.duplicate_skipped", pipeline_id, stage="publish", reason="existing_video", video_id=existing["youtube_video_id"], publish_id=pipeline_id)
                 return {
                     "status": "completed",
                     "video_id": existing["youtube_video_id"],
@@ -154,11 +193,15 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
 
     out_dir = Path(result.get("output_dir", ""))
     if not out_dir.exists():
-        return {"status": "failed", "error": f"Output directory not found: {out_dir}"}
+        reason = f"Output directory not found: {out_dir}"
+        publish_decision("failed", "publish input validation failed", selected="fail", failure_reason=reason)
+        return {"status": "failed", "error": reason}
 
     script_path = out_dir / "script" / "script.json"
     if not script_path.exists():
-        return {"status": "failed", "error": f"script.json not found at {script_path}"}
+        reason = f"script.json not found at {script_path}"
+        publish_decision("failed", "publish input validation failed", selected="fail", failure_reason=reason)
+        return {"status": "failed", "error": reason}
 
     script_data = _json.loads(script_path.read_text(encoding="utf-8"))
 
@@ -169,12 +212,37 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
     if existing_thumbs:
         thumbnail_path = str(existing_thumbs[0])
         thumb_result["thumbnails"]["variants"] = [{"path": str(p)} for p in existing_thumbs]
+        record_decision(
+            "thumbnail_selection", pipeline_id=pipeline_id,
+            context={"topic": topic},
+            options=[{"option": str(p), "rank": index} for index, p in enumerate(existing_thumbs)],
+            selected_option=thumbnail_path,
+            rationale="first pre-generated thumbnail selected by existing pipeline policy",
+            confidence=1.0,
+            source="agents.decision_executor.publish_video",
+            idempotency_key=f"{pipeline_id}:thumbnail_selection:{thumbnail_path}",
+            correlation_id=pipeline_id,
+        )
         logger.info(f"Thumbnails: {len(existing_thumbs)} existing variants (parallel gen)")
     else:
         logger.info("Generating thumbnails (no pre-generated found)...")
         thumb_agent = ThumbnailAgent()
         thumb_result = thumb_agent.run(topic, pipeline_id, script_data)
         thumbnail_path = pick_best_thumbnail(thumb_result.get("thumbnails", {}))
+        variants = thumb_result.get("thumbnails", {}).get("variants", [])
+        record_decision(
+            "thumbnail_selection", pipeline_id=pipeline_id,
+            context={"topic": topic},
+            options=[{"option": item.get("path", ""), "style": item.get("style", ""), "rank": index} for index, item in enumerate(variants)],
+            selected_option=thumbnail_path or "",
+            rationale="existing thumbnail scoring policy selected the best generated variant",
+            confidence=1.0 if thumbnail_path else 0.0,
+            source="agents.decision_executor.publish_video",
+            status="completed" if thumbnail_path else "failed",
+            failure_reason="no thumbnail selected" if not thumbnail_path else "",
+            idempotency_key=f"{pipeline_id}:thumbnail_selection:{thumbnail_path or 'none'}",
+            correlation_id=pipeline_id,
+        )
 
     # Metadata
     logger.info("Generating metadata...")
@@ -185,10 +253,23 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
     # Find video
     video_candidates = list(out_dir.glob("video/*_final.mp4"))
     if not video_candidates:
-        return {"status": "failed", "error": "No final MP4 found"}
+        reason = "No final MP4 found"
+        publish_decision("failed", "publish input validation failed", selected="fail", failure_reason=reason)
+        return {"status": "failed", "error": reason}
     video_path = str(video_candidates[0])
 
     best_title = meta.get("best_title", topic)
+    record_decision(
+        "title_selection", pipeline_id=pipeline_id,
+        context={"topic": topic},
+        options=[{"option": title, "rank": index} for index, title in enumerate(meta.get("all_titles", []) or [best_title])],
+        selected_option=best_title,
+        rationale="metadata agent selected best_title from generated title candidates",
+        confidence=1.0 if best_title else 0.0,
+        source="agents.decision_executor.publish_video",
+        idempotency_key=f"{pipeline_id}:title_selection:{best_title}",
+        correlation_id=pipeline_id,
+    )
     description = meta.get("description", "")
     tags = meta.get("tags", [])
 
@@ -200,8 +281,9 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
         tags=tags,
         category_id=meta.get("category_id", "27"),
         privacy_status=privacy,
-        playlist_id=None,
+        playlist_id=playlist_id,
         thumbnail_path=thumbnail_path,
+        pipeline_id=pipeline_id,
     )
 
     if up_result.get("status") == "completed":
@@ -225,19 +307,24 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
         except Exception as e:
             logger.warning(f"AB seeding skipped: {e}")
         logger.info(f"Published: {url}")
+        decision = publish_decision("completed", "YouTube upload completed", selected="publish", video_id=vid, publish_id=pipeline_id, actual_outcome={"status": "completed", "video_id": vid, "url": url})
+        record_event("publish.completed", pipeline_id, stage="publish", decision_id=decision.get("decision_id", ""), reason="upload_completed", video_id=vid, publish_id=pipeline_id)
 
     # Record publish runtime
     _pub_duration = _time.time() - _pub_start
     try:
-        from mindmargin.analytics.monitoring import record_event
-        record_event("publish_runtime_seconds", pipeline_id, round(_pub_duration, 2),
+        from mindmargin.analytics.monitoring import record_event as record_metric_event
+        record_metric_event("publish_runtime_seconds", pipeline_id, round(_pub_duration, 2),
                      metadata={"topic": topic, "video_id": up_result.get("video_id", "")})
     except Exception:
         pass
 
     if up_result.get("status") == "completed":
         return {"status": "completed", "video_id": vid, "url": url}
-    return {"status": "failed", "error": up_result.get("error", "upload failed")}
+    reason = up_result.get("error", "upload failed")
+    decision = publish_decision("failed", "YouTube upload did not complete", selected="fail", failure_reason=reason, actual_outcome={"status": "failed", "error": reason})
+    record_event("publish.failed", pipeline_id, stage="publish", decision_id=decision.get("decision_id", ""), reason=reason, publish_id=pipeline_id)
+    return {"status": "failed", "error": reason}
 
 
 def log_execution(pipeline_id: str, topic: str,
@@ -407,9 +494,11 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
     logger.info("  DECISION EXECUTOR — Autonomous Cycle Starting")
     logger.info("=" * 55)
 
+    planned_pipeline_id = f"pipe_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:6]}"
     cycle = {
         "status": "running",
         "started_at": datetime.utcnow().isoformat(),
+        "pipeline_id": planned_pipeline_id,
         "steps": {},
     }
 
@@ -457,7 +546,7 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
 
     # Step 3: Select topic
     logger.info("Selecting topic...")
-    topic = select_topic(brain, growth)
+    topic = select_topic(brain, growth, pipeline_id=planned_pipeline_id)
     if not topic:
         cycle["status"] = "failed"
         cycle["error"] = "No topic could be selected"
@@ -510,9 +599,9 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
     # Step 4: Run content pipeline
     logger.info("Step 3/4: Running Content Pipeline...")
     try:
-        pipe_result = execute_pipeline(topic, quick=quick)
+        pipe_result = execute_pipeline(topic, quick=quick, pipeline_id=planned_pipeline_id)
         pipeline_status = pipe_result.get("status", "failed")
-        pipeline_id = pipe_result.get("pipeline_id", f"pipe_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+        pipeline_id = pipe_result.get("pipeline_id", planned_pipeline_id)
         cycle["steps"]["pipeline"] = {
             "status": pipeline_status,
             "pipeline_id": pipeline_id,
@@ -539,6 +628,7 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
     save_pipeline_result(pipeline_id, pipe_result)
 
     # Step 5: Publish (optional)
+    from mindmargin.intelligence.instrumentation import record_decision, record_event
     pub_status = "skipped"
     pub_video_id = ""
     pub_url = ""
@@ -548,6 +638,8 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
         health_blocked, health_reason = _check_channel_health()
         if health_blocked:
             logger.warning(f"Channel health gate BLOCKED: {health_reason}")
+            record_decision("publish_eligibility", pipeline_id=pipeline_id, context={"gate": "channel_health"}, options=[{"option": "publish"}, {"option": "skip"}], selected_option="skip", rationale="channel health policy blocked publication", confidence=1.0, evidence=[{"gate": "channel_health", "reason": health_reason}], source="agents.decision_executor.execute_top_decision", status="completed", idempotency_key=f"{pipeline_id}:eligibility:channel_health:{health_reason}", correlation_id=pipeline_id)
+            record_event("publish.blocked", pipeline_id, stage="eligibility", reason=health_reason)
             cycle["steps"]["publish"] = {"status": "blocked", "reason": health_reason}
         else:
             logger.info("Channel health gate: PASSED")
@@ -555,6 +647,8 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
             cap_blocked, cap_reason = _check_daily_publish_cap()
             if cap_blocked:
                 logger.warning(f"Daily publish cap BLOCKED: {cap_reason}")
+                record_decision("publish_eligibility", pipeline_id=pipeline_id, context={"gate": "daily_cap"}, options=[{"option": "publish"}, {"option": "skip"}], selected_option="skip", rationale="daily publish cap blocked publication", confidence=1.0, evidence=[{"gate": "daily_cap", "reason": cap_reason}], source="agents.decision_executor.execute_top_decision", status="completed", idempotency_key=f"{pipeline_id}:eligibility:daily_cap:{cap_reason}", correlation_id=pipeline_id)
+                record_event("publish.blocked", pipeline_id, stage="eligibility", reason=cap_reason)
                 cycle["steps"]["publish"] = {"status": "blocked", "reason": cap_reason}
             else:
                 logger.info("Daily publish cap: PASSED")
@@ -571,6 +665,10 @@ def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
                     pub_status = "failed"
                     cycle["steps"]["publish"] = {"status": "failed", "error": str(e)}
                     logger.error(f"Publish failed: {e}")
+
+    if not auto_publish:
+        record_decision("publish_eligibility", pipeline_id=pipeline_id, context={"auto_publish": False}, options=[{"option": "publish"}, {"option": "skip"}], selected_option="skip", rationale="caller disabled automatic publication", confidence=1.0, source="agents.decision_executor.execute_top_decision", idempotency_key=f"{pipeline_id}:eligibility:auto_publish:false", correlation_id=pipeline_id)
+        record_event("publish.skipped", pipeline_id, stage="eligibility", reason="auto_publish_false")
 
     # Log execution with accurate error — only empty when a real upload occurred.
     # is_successful_publish() checks bool(video_id), so blocked/skipped publishes

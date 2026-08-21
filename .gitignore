@@ -14,6 +14,8 @@ __pycache__/
 
 # Output / Temp
 output/
+*.jsonl
+
 *.log
 *.wav
 .coverage
@@ -34,8 +36,10 @@ Thumbs.db
 .vscode/
 
 # Temp auth files
+auth_url.txt
 flow_data.json
 flow_state.json
+*.pickle
 
 # Coverage artifacts (from coverage.py --context-lines)
 *,cover

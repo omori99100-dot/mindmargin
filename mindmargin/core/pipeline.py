@@ -224,6 +224,26 @@ class Pipeline:
             except Exception as e:
                 last_error = e
                 logger.warning(f"[retry] {name} attempt {attempt}/{max_retries}: {e}")
+                try:
+                    from mindmargin.intelligence.instrumentation import record_decision, record_event
+                    record_decision(
+                        "production_retry" if attempt < max_retries else "production_failure",
+                        pipeline_id=self.pipeline_id,
+                        context={"stage": name, "attempt": attempt, "max_retries": max_retries},
+                        options=[{"option": "retry"}, {"option": "fail"}],
+                        selected_option="retry" if attempt < max_retries else "fail",
+                        rationale="existing pipeline retry policy after stage exception",
+                        confidence=1.0,
+                        evidence=[{"error": str(e), "stage": name}],
+                        source="core.pipeline._run_with_retry",
+                        status="failed" if attempt == max_retries else "completed",
+                        failure_reason=str(e) if attempt == max_retries else "",
+                        idempotency_key=f"{self.pipeline_id}:production:{name}:{attempt}:{str(e)}",
+                        correlation_id=self.pipeline_id,
+                    )
+                    record_event("pipeline.retry" if attempt < max_retries else "pipeline.stage_failed", self.pipeline_id, stage=name, reason=str(e))
+                except Exception as instrumentation_error:
+                    logger.warning("Phase B retry instrumentation failed: %s", instrumentation_error)
                 if attempt < max_retries:
                     import time
                     time.sleep(2)

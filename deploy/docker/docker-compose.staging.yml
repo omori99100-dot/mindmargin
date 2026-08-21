@@ -1,12 +1,10 @@
-version: "3.8"
-
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
-      - redis_data:/data
+      - mindmargin_staging_redis_data:/data
+    networks:
+      - staging_internal
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -16,18 +14,16 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      - mindmargin_staging_ollama_data:/root/.ollama
+    networks:
+      - staging_internal
     restart: unless-stopped
 
   api:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
-    ports:
-      - "8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://ollama:11434
@@ -35,8 +31,10 @@ services:
       LOG_LEVEL: INFO
       DEBUG: "false"
     volumes:
-      - ../../output:/app/output
-      - ../../data:/app/data
+      - ${MINDMARGIN_STAGING_ROOT:?MINDMARGIN_STAGING_ROOT must be set}/output:/app/output
+      - ${MINDMARGIN_STAGING_ROOT:?MINDMARGIN_STAGING_ROOT must be set}/data:/app/data
+    networks:
+      - staging_internal
     depends_on:
       redis:
         condition: service_healthy
@@ -54,8 +52,10 @@ services:
       ENVIRONMENT: staging
       LOG_LEVEL: INFO
     volumes:
-      - ../../output:/app/output
-      - ../../data:/app/data
+      - ${MINDMARGIN_STAGING_ROOT:?MINDMARGIN_STAGING_ROOT must be set}/output:/app/output
+      - ${MINDMARGIN_STAGING_ROOT:?MINDMARGIN_STAGING_ROOT must be set}/data:/app/data
+    networks:
+      - staging_internal
     depends_on:
       redis:
         condition: service_healthy
@@ -64,5 +64,12 @@ services:
     restart: unless-stopped
 
 volumes:
-  redis_data:
-  ollama_data:
+  mindmargin_staging_redis_data:
+    name: mindmargin_staging_redis_data
+  mindmargin_staging_ollama_data:
+    name: mindmargin_staging_ollama_data
+
+networks:
+  staging_internal:
+    name: mindmargin_staging_internal
+    internal: true
