@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+from mindmargin.analytics import memory
 from mindmargin.analytics.memory import (
     get_pipeline_history, get_best_practices, get_best_hooks, get_best_titles,
     get_top_performers, save_best_practice,
@@ -21,6 +22,16 @@ from mindmargin.analytics.memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_db():
+    """Compatibility seam for callers and tests that inject an analytics connection.
+
+    Selection logic historically imported individual memory functions, which made
+    database substitution inconsistent. Keep this adapter while the persistence
+    layer is migrated behind an application service.
+    """
+    return memory._get_db()
 
 # ── Topic expansion map (parent → likely child topics) ──
 _TOPIC_EXPANSION_MAP: dict[str, list[str]] = {
@@ -700,6 +711,7 @@ def get_evolution_memory_summary() -> dict:
     lineages = get_topic_lineages(limit=20)
 
     return {
+        "status": "completed",
         "reinforced_count": len(reinforced),
         "suppressed_count": len(suppressed),
         "dead_count": len(dead),
@@ -880,8 +892,18 @@ def generate_validation_report() -> dict:
     }
 
 
-def format_selection_report(result: dict) -> str:
-    """Format selection cycle result as human-readable string."""
+def format_selection_report(result: dict | None = None) -> str:
+    """Format a cycle result, or the current memory snapshot if omitted."""
+    if result is None:
+        summary = get_evolution_memory_summary()
+        return "\n".join([
+            "Selection Pressure Report",
+            f"Status: {summary.get('status', 'unknown')}",
+            f"Classified: {summary.get('total_classified', 0)}",
+            f"Reinforced patterns: {summary.get('reinforced_count', 0)}",
+            f"Suppressed patterns: {summary.get('suppressed_count', 0)}",
+            f"Topic suggestions: {len(summary.get('topic_suggestions', []))}",
+        ])
     classes = result.get("classifications", {})
     reinforced = result.get("reinforced", {})
     suppressed = result.get("suppressed", {})
