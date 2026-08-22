@@ -1,8 +1,12 @@
 """Unit tests for analytics.memory — SQLite persistence layer."""
 
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from datetime import datetime
+
+import mindmargin.analytics.memory as memory
 
 from mindmargin.analytics.memory import (
     save_pipeline, save_pipeline_result, get_pipeline_history,
@@ -24,6 +28,69 @@ from mindmargin.analytics.memory import (
     save_drift_snapshot, get_drift_history, get_latest_drift, get_analytics_by_week,
     close,
 )
+
+
+def test_on_disk_sqlite_concurrency_and_rollback(tmp_path, monkeypatch):
+    """Exercise real shared-file schema init, writers, and rollback semantics."""
+    monkeypatch.setattr(memory.settings.storage, "output_root", str(tmp_path / "output"))
+    monkeypatch.setattr(memory, "_local", threading.local())
+
+    def run_parallel(fn, workers=8, rounds=3):
+        errors = []
+        results = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(fn, i, r) for r in range(rounds) for i in range(workers)]
+            for future in futures:
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    errors.append(exc)
+        assert errors == []
+        return results
+
+    results = run_parallel(lambda i, r: memory._get_db().execute("SELECT 1").fetchone()[0], workers=12, rounds=2)
+    assert len(results) == 24
+
+    run_parallel(
+        lambda i, r: memory.save_best_practice("concurrency", f"key-{r}-{i}", f"value-{i}", float(i)),
+        workers=8,
+        rounds=3,
+    )
+    rows = memory._get_db().execute(
+        "SELECT * FROM best_practices WHERE category=? AND key LIKE 'key-%'",
+        ("concurrency",),
+    ).fetchall()
+    assert len(rows) == 24
+
+    run_parallel(
+        lambda i, r: memory.save_best_practice("concurrency", "same-key", f"value-{r}-{i}", float(i)),
+        workers=8,
+        rounds=3,
+    )
+    same = [row for row in memory.get_best_practices("concurrency") if row["key"] == "same-key"]
+    assert len(same) == 1
+    assert same[0]["sample_size"] == 24
+
+    conn = memory._get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO best_practices(category, key, value, score) VALUES (?, ?, ?, ?)",
+            ("concurrency", "rollback-only", "must-disappear", 1.0),
+        )
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("INSERT INTO table_that_does_not_exist(x) VALUES (1)")
+    finally:
+        conn.rollback()
+    memory.save_best_practice("concurrency", "after-rollback", "survived", 1.0)
+    assert conn.execute(
+        "SELECT 1 FROM best_practices WHERE category=? AND key=?",
+        ("concurrency", "rollback-only"),
+    ).fetchone() is None
+    assert conn.execute(
+        "SELECT 1 FROM best_practices WHERE category=? AND key=?",
+        ("concurrency", "after-rollback"),
+    ).fetchone() is not None
 
 
 def test_save_and_get_pipeline(in_memory_db, monkeypatch):

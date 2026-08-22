@@ -5,6 +5,7 @@ for use by youtube/connector.py. All existing function-level imports are
 re-exported via youtube/__init__.py for backward compatibility.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -213,6 +214,7 @@ def upload_video(
     thumbnail_path: Optional[str] = None,
     publish_at: Optional[str] = None,
     max_retries: int = 3,
+    pipeline_id: str = "",
 ) -> dict:
     """Upload a video to YouTube with exponential backoff retry.
 
@@ -221,6 +223,7 @@ def upload_video(
 
     Returns response dict with video_id, status, etc.
     """
+    pipeline_id = pipeline_id or "upload_" + hashlib.sha256(f"{video_path}:{title}".encode()).hexdigest()[:16]
     yt = _get_authenticated_service()
     if not yt:
         return {"status": "failed", "error": "YouTube service not available"}
@@ -244,6 +247,7 @@ def upload_video(
         body["status"]["publishAt"] = publish_at
 
     last_error = None
+    from mindmargin.intelligence.instrumentation import record_decision, record_event
     for attempt in range(1, max_retries + 1):
         try:
             from googleapiclient.http import MediaFileUpload
@@ -298,6 +302,9 @@ def upload_video(
             # Retry on 5xx, 429 (quota), or network errors
             if attempt < max_retries:
                 delay = min(2 ** attempt + random.uniform(0, 1), 60)
+                if pipeline_id:
+                    record_decision("publish_retry", pipeline_id=pipeline_id, context={"attempt": attempt, "max_retries": max_retries, "status_code": status_code}, options=[{"option": "retry"}, {"option": "fail"}], selected_option="retry", rationale="existing YouTube transient-error retry policy", confidence=1.0, evidence=[{"status_code": status_code, "error": error_reason}], source="integrations.youtube.client.upload_video", idempotency_key=f"{pipeline_id}:publish_retry:{attempt}:{status_code}:{error_reason}", correlation_id=pipeline_id)
+                    record_event("publish.retry", pipeline_id, stage="publish", reason=error_reason, publish_id=pipeline_id, metadata={"attempt": attempt, "status_code": status_code})
                 logger.warning(
                     f"Upload attempt {attempt} failed (HTTP {status_code}): {error_reason}. "
                     f"Retrying in {delay:.1f}s..."
@@ -305,12 +312,17 @@ def upload_video(
                 time.sleep(delay)
             else:
                 logger.error(f"YouTube upload failed after {max_retries} attempts: {error_reason}")
+                if pipeline_id:
+                    record_decision("publish_failure", pipeline_id=pipeline_id, context={"attempt": attempt, "max_retries": max_retries}, options=[{"option": "retry"}, {"option": "fail"}], selected_option="fail", rationale="YouTube retry budget exhausted", confidence=1.0, evidence=[{"error": error_reason, "status_code": status_code}], source="integrations.youtube.client.upload_video", status="failed", failure_reason=error_reason, idempotency_key=f"{pipeline_id}:publish_failure:{attempt}:{status_code}:{error_reason}", correlation_id=pipeline_id)
                 return {"status": "failed", "error": f"HTTP {status_code}: {error_reason}"}
 
         except Exception as e:
             last_error = e
             if attempt < max_retries:
                 delay = min(2 ** attempt + random.uniform(0, 1), 60)
+                if pipeline_id:
+                    record_decision("publish_retry", pipeline_id=pipeline_id, context={"attempt": attempt, "max_retries": max_retries, "error_type": type(e).__name__}, options=[{"option": "retry"}, {"option": "fail"}], selected_option="retry", rationale="existing YouTube network retry policy", confidence=1.0, evidence=[{"error": str(e)}], source="integrations.youtube.client.upload_video", idempotency_key=f"{pipeline_id}:publish_retry:{attempt}:{type(e).__name__}:{str(e)}", correlation_id=pipeline_id)
+                    record_event("publish.retry", pipeline_id, stage="publish", reason=str(e), publish_id=pipeline_id, metadata={"attempt": attempt, "error_type": type(e).__name__})
                 logger.warning(
                     f"Upload attempt {attempt} failed: {e}. "
                     f"Retrying in {delay:.1f}s..."
@@ -318,6 +330,8 @@ def upload_video(
                 time.sleep(delay)
             else:
                 logger.error(f"YouTube upload failed after {max_retries} attempts: {e}")
+                if pipeline_id:
+                    record_decision("publish_failure", pipeline_id=pipeline_id, context={"attempt": attempt, "max_retries": max_retries}, options=[{"option": "retry"}, {"option": "fail"}], selected_option="fail", rationale="YouTube retry budget exhausted", confidence=1.0, evidence=[{"error": str(e)}], source="integrations.youtube.client.upload_video", status="failed", failure_reason=str(e), idempotency_key=f"{pipeline_id}:publish_failure:{attempt}:{type(e).__name__}:{str(e)}", correlation_id=pipeline_id)
                 return {"status": "failed", "error": str(e)}
 
     return {"status": "failed", "error": str(last_error) or "upload failed after retries"}
@@ -613,7 +627,7 @@ class YouTubeClient:
 
     def upload(self, file_path: str, title: str, description: str = "",
                tags: list[str] = None, category_id: str = "27",
-               privacy: str = "private") -> dict:
+               privacy: str = "private", pipeline_id: str = "") -> dict:
         return upload_video(
             video_path=file_path,
             title=title,
@@ -621,6 +635,7 @@ class YouTubeClient:
             tags=tags,
             category_id=category_id,
             privacy_status=privacy,
+            pipeline_id=pipeline_id,
         )
 
     def add_to_playlist(self, video_id: str, playlist_id: str) -> bool:

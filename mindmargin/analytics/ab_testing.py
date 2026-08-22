@@ -25,6 +25,8 @@ from mindmargin.analytics.memory import (
     get_ab_winner_for_pipeline, get_all_completed_ab_tests,
 )
 from mindmargin.integrations.youtube import update_video_metadata, _get_authenticated_service
+from mindmargin.intelligence.contracts import ExperimentResult
+from mindmargin.intelligence.instrumentation import record_decision, record_event, record_experiment, record_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,26 @@ def seed_variants(pipeline_id: str, video_id: str) -> int:
 
     if seeded:
         logger.info(f"Seed: {seeded} AB variants for {pipeline_id} ({video_id})")
+        for variant_type in ("title", "thumbnail"):
+            variants = [
+                {"index": row["variant_index"], "value": row["variant_value"]}
+                for row in get_ab_variants(pipeline_id, variant_type)
+            ]
+            if variants:
+                experiment = ExperimentResult(
+                    experiment_id=f"exp_{pipeline_id}_{variant_type}",
+                    hypothesis=f"{variant_type} variant improves CTR or watch time",
+                    variable=variant_type,
+                    variants=variants,
+                    success_metric="ctr",
+                    minimum_sample=100,
+                    sample_size=0,
+                    pipeline_id=pipeline_id,
+                    video_id=video_id,
+                    correlation_id=pipeline_id,
+                )
+                record_experiment(experiment)
+                record_event("experiment.created", pipeline_id, stage="experimentation", experiment_id=experiment.experiment_id, video_id=video_id)
     return seeded
 
 
@@ -380,8 +402,37 @@ def run_ab_rotation_cycle(dry_run: bool = False) -> dict:
         # A/B results are invalid unless impressions >= 100
         metrics = _fetch_video_analytics(group[0]["video_id"])
         if metrics["impressions"] < 100:
-            logger.info(f"A/B results invalid for {pid}/{vtype}: "
-                        f"impressions={metrics['impressions']} < 100 — keeping all variants active")
+            experiment = ExperimentResult(
+                experiment_id=f"exp_{pid}_{vtype}",
+                hypothesis=f"{vtype} variant improves CTR or watch time",
+                variable=vtype,
+                variants=[{"index": item["variant_index"], "value": item["variant_value"]} for item in group],
+                success_metric="ctr",
+                minimum_sample=100,
+                sample_size=metrics["impressions"],
+                pipeline_id=pid,
+                video_id=group[0]["video_id"],
+                correlation_id=pid,
+            ).declare_inconclusive({"impressions": metrics["impressions"], "reason": "minimum sample not reached"})
+            record_experiment(experiment)
+            decision = record_decision(
+                "ab_winner_selection", pipeline_id=pid,
+                context={"variant_type": vtype, "status": "inconclusive"},
+                options=[{"option": item["variant_index"], "ctr": item.get("ctr", 0)} for item in group],
+                selected_option="INCONCLUSIVE",
+                rationale="minimum sample gate prevented winner declaration",
+                confidence=0.0,
+                evidence=[{"metric": "impressions", "value": metrics["impressions"], "minimum": 100}],
+                experiment_id=experiment.experiment_id,
+                video_id=group[0]["video_id"],
+                source="analytics.ab_testing.run_ab_rotation_cycle",
+                status="completed",
+                idempotency_key=f"{pid}:ab:{vtype}:inconclusive:{metrics['impressions']}",
+                correlation_id=pid,
+            )
+            record_outcome(pid, decision_id=decision.get("decision_id", ""), experiment_id=experiment.experiment_id, video_id=group[0]["video_id"], outcome_type="ab_inconclusive", metrics={"impressions": metrics["impressions"]}, correlation_id=pid)
+            record_event("experiment.inconclusive", pid, stage="experimentation", reason="minimum_sample", experiment_id=experiment.experiment_id, video_id=group[0]["video_id"])
+            logger.info(f"A/B results invalid for {pid}/{vtype}: impressions={metrics['impressions']} < 100 — keeping all variants active")
             continue
 
         # Include the original (variant_index=0) if it was tested
@@ -390,6 +441,41 @@ def run_ab_rotation_cycle(dry_run: bool = False) -> dict:
 
         winner = _select_winner(group)
         if winner:
+            experiment_id = f"exp_{pid}_{vtype}"
+            sample_size = int(metrics.get("impressions", 0) or 0)
+            experiment = ExperimentResult(
+                experiment_id=experiment_id,
+                hypothesis=f"{vtype} variant improves CTR or watch time",
+                variable=vtype,
+                variants=[{"index": item["variant_index"], "value": item["variant_value"]} for item in group],
+                success_metric="ctr",
+                minimum_sample=100,
+                sample_size=sample_size,
+                pipeline_id=pid,
+                video_id=winner["video_id"],
+                correlation_id=pid,
+            ).declare_winner(
+                str(winner["variant_index"]),
+                confidence=0.75,
+                result={"ctr": winner.get("ctr", 0), "watch_time_s": winner.get("watch_time_s", 0)},
+            )
+            record_experiment(experiment)
+            decision = record_decision(
+                "ab_winner_selection", pipeline_id=pid,
+                context={"variant_type": vtype, "status": "completed"},
+                options=[{"option": item["variant_index"], "ctr": item.get("ctr", 0), "watch_time_s": item.get("watch_time_s", 0)} for item in group],
+                selected_option=str(winner["variant_index"]),
+                rationale="deterministic CTR-first selection with watch-time tie break",
+                confidence=0.75,
+                evidence=[{"metric": "impressions", "value": sample_size}, {"metric": "ctr", "value": winner.get("ctr", 0)}],
+                experiment_id=experiment_id,
+                video_id=winner["video_id"],
+                source="analytics.ab_testing.run_ab_rotation_cycle",
+                idempotency_key=f"{pid}:ab:{vtype}:winner:{winner['variant_index']}",
+                correlation_id=pid,
+            )
+            record_outcome(pid, decision_id=decision.get("decision_id", ""), experiment_id=experiment_id, video_id=winner["video_id"], outcome_type="ab_performance", metrics={"impressions": sample_size, "ctr": winner.get("ctr", 0), "watch_time_s": winner.get("watch_time_s", 0)}, correlation_id=pid)
+            record_event("experiment.winner_selected", pid, stage="experimentation", reason="minimum_sample_reached", experiment_id=experiment_id, video_id=winner["video_id"])
             set_ab_winner(winner["id"])
             actions.append(f"winner declared: {vtype} #{winner['variant_index']} "
                            f"(CTR={winner.get('ctr', 0):.1f}%)")

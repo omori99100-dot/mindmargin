@@ -1,6 +1,10 @@
 """Unit tests for analytics.growth_engine — growth intelligence."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
+import mindmargin.analytics.memory as memory
 from mindmargin.analytics.growth_engine import (
     expand_topic_tree, cluster_published_topics,
     identify_growth_opportunities, analyze_portfolio_balance,
@@ -66,3 +70,20 @@ class TestRunGrowthAnalysis:
         assert "opportunities" in report
         assert "portfolio_balance" in report
         assert "top_recommendations" in report
+
+    def test_concurrent_full_analysis_real_sqlite(self, tmp_path, monkeypatch):
+        """The historical growth path must survive shared-file concurrency."""
+        monkeypatch.setattr(memory.settings.storage, "output_root", str(tmp_path / "output"))
+        monkeypatch.setattr(memory, "_local", threading.local())
+        errors = []
+        reports = []
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(run_growth_analysis) for _ in range(16)]
+            for future in futures:
+                try:
+                    reports.append(future.result())
+                except Exception as exc:
+                    errors.append(exc)
+        assert errors == []
+        assert len(reports) == 16
+        assert all(report["status"] == "completed" for report in reports)
