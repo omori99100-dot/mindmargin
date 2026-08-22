@@ -1,6 +1,7 @@
 import time
 import shutil
 from datetime import datetime
+from urllib.parse import urlparse
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -14,9 +15,20 @@ router = APIRouter(tags=["Health"])
 def _check_redis() -> CheckerResult:
     try:
         import redis
-        r = redis.Redis.from_url(settings.redis_url, socket_timeout=3)
-        r.ping()
-        return CheckerResult(checker="redis", status="pass", value=1.0, detail=settings.redis_url)
+        parsed = urlparse(settings.redis_url)
+        db = int((parsed.path or "/0").strip("/") or 0)
+        client = redis.Redis(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6379,
+            db=db,
+            username=parsed.username,
+            password=parsed.password,
+            ssl=(parsed.scheme == "rediss"),
+            socket_timeout=3,
+        )
+        client.ping()
+        safe_detail = f"{parsed.hostname or 'localhost'}:{parsed.port or 6379}/{db}"
+        return CheckerResult(checker="redis", status="pass", value=1.0, detail=safe_detail)
     except Exception as e:
         return CheckerResult(checker="redis", status="critical", value=0, detail=str(e))
 
