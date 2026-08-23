@@ -1,5 +1,6 @@
 """Tests for daily_intelligence job (jobs/daily_intelligence.py)."""
 
+from datetime import datetime
 from unittest.mock import patch, MagicMock
 from mindmargin.jobs.daily_intelligence import run_intelligence_cycle, run_daily_intelligence_job
 
@@ -21,7 +22,9 @@ class TestRunIntelligenceCycle:
             "ranked_count": 5,
         }
 
-        result = run_intelligence_cycle()
+        with patch("mindmargin.jobs.daily_intelligence._datetime") as mock_datetime:
+            mock_datetime.utcnow.return_value = datetime(2026, 8, 24)  # Monday
+            result = run_intelligence_cycle()
 
         assert result["status"] == "completed"
         assert result["stages"]["scoring"]["status"] == "completed"

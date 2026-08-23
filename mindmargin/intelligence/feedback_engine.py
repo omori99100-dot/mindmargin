@@ -140,7 +140,7 @@ class FeedbackEngine:
 
     COMPONENTS = [
         "trend_score", "novelty", "audience_match",
-        "evergreen_score", "competition", "historical_performance",
+        "evergreen_score", "competition_inverse", "historical_performance",
         "seasonality",
     ]
 
