@@ -1,7 +1,10 @@
 """Unit tests for analytics.memory — SQLite persistence layer."""
 
+import multiprocessing
+import os
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 import pytest
 from datetime import datetime
@@ -347,3 +350,101 @@ def test_analytics_by_week(in_memory_db, monkeypatch):
 def test_close_does_not_raise(in_memory_db, monkeypatch):
     monkeypatch.setattr("mindmargin.analytics.memory._get_db", lambda: in_memory_db)
     close()
+
+
+def _schema_init_child(output_root, start_event, result_queue):
+    import threading as child_threading
+    import mindmargin.analytics.memory as child_memory
+
+    child_memory.settings.storage.output_root = output_root
+    child_memory._local = child_threading.local()
+    start_event.wait(10)
+    try:
+        connection = child_memory._get_db()
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        expected = {"pipelines", "titles", "hooks", "best_practices", "video_classifications"}
+        result_queue.put(("ok", sorted(expected - tables)))
+    except Exception as exc:
+        result_queue.put(("error", repr(exc)))
+
+
+def test_write_retry_exhausts_on_database_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory.settings.storage, "output_root", str(tmp_path / "output"))
+    monkeypatch.setattr(memory, "_local", threading.local())
+    connection = memory._get_db()
+    competing = sqlite3.connect(
+        str(tmp_path / "data" / "mindmargin.db"), timeout=0.1
+    )
+    competing.execute("BEGIN IMMEDIATE")
+    competing.execute(
+        "INSERT INTO pipelines(id, topic) VALUES (?, ?)",
+        ("lock-holder", "lock-holder"),
+    )
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            memory.save_pipeline("blocked", "blocked")
+    finally:
+        competing.rollback()
+        competing.close()
+        connection.rollback()
+        memory.close()
+
+
+def test_schema_init_is_process_safe(tmp_path):
+    output_root = str(tmp_path / "output")
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_schema_init_child,
+            args=(output_root, start_event, result_queue),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    for process in processes:
+        process.join(30)
+    assert all(process.exitcode == 0 for process in processes)
+    results = [result_queue.get(timeout=5) for _ in processes]
+    assert all(status == "ok" and missing == [] for status, missing in results)
+
+
+def test_write_retry_succeeds_after_database_lock_release(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory.settings.storage, "output_root", str(tmp_path / "output"))
+    monkeypatch.setattr(memory, "_local", threading.local())
+    connection = memory._get_db()
+    connection.execute("PRAGMA busy_timeout=50")
+    competing = sqlite3.connect(
+        str(tmp_path / "data" / "mindmargin.db"), timeout=0.1,
+        check_same_thread=False,
+    )
+    competing.execute("BEGIN IMMEDIATE")
+    competing.execute(
+        "INSERT INTO pipelines(id, topic) VALUES (?, ?)",
+        ("temporary-lock", "temporary-lock"),
+    )
+
+    def release_lock():
+        time.sleep(0.08)
+        competing.rollback()
+        competing.close()
+
+    releaser = threading.Thread(target=release_lock)
+    releaser.start()
+    try:
+        memory.save_pipeline("released", "released")
+    finally:
+        releaser.join(5)
+        memory.close()
+    assert memory._get_db().execute(
+        "SELECT 1 FROM pipelines WHERE id=?", ("released",)
+    ).fetchone() is not None
+    memory.close()

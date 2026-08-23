@@ -2,9 +2,13 @@
 
 import json
 import logging
+import os
 import sqlite3
+import fcntl
 import threading
+import time
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,6 +17,22 @@ from mindmargin.config import settings
 logger = logging.getLogger(__name__)
 
 _local = threading.local()
+_schema_init_lock = threading.Lock()
+
+
+def _sqlite_trace_enabled() -> bool:
+    return os.getenv("MINDMARGIN_SQLITE_TRACE", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _sqlite_trace(conn_id: int, statement: str) -> None:
+    if _sqlite_trace_enabled():
+        logger.info(
+            "sqlite_trace conn=%s pid=%s tid=%s statement=%s",
+            conn_id,
+            os.getpid(),
+            threading.get_ident(),
+            " ".join(statement.strip().split()),
+        )
 
 
 def _get_db() -> sqlite3.Connection:
@@ -22,9 +42,47 @@ def _get_db() -> sqlite3.Connection:
         db_path = db_dir / "mindmargin.db"
         _local.conn = sqlite3.connect(str(db_path))
         _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
+        if _sqlite_trace_enabled():
+            conn_id = id(_local.conn)
+            _local.conn.set_trace_callback(lambda statement: _sqlite_trace(conn_id, statement))
+            logger.info(
+                "sqlite_connection_open conn=%s pid=%s tid=%s path=%s",
+                conn_id,
+                os.getpid(),
+                threading.get_ident(),
+                db_path,
+            )
         _local.conn.execute("PRAGMA busy_timeout=5000")
-        _init_schema(_local.conn)
+        schema_lock_path = db_dir / "schema_init.lock"
+        with schema_lock_path.open("a+") as schema_lock_handle:
+            fcntl.flock(schema_lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                with _schema_init_lock:
+                    if _sqlite_trace_enabled():
+                        logger.info(
+                            "sqlite_schema_init_start conn=%s pid=%s tid=%s",
+                            id(_local.conn),
+                            os.getpid(),
+                            threading.get_ident(),
+                        )
+                    try:
+                        _local.conn.execute("PRAGMA journal_mode=WAL")
+                        _local.conn.execute("BEGIN IMMEDIATE")
+                        _init_schema(_local.conn)
+                        _local.conn.commit()
+                    except Exception:
+                        _local.conn.rollback()
+                        raise
+                    finally:
+                        if _sqlite_trace_enabled():
+                            logger.info(
+                                "sqlite_schema_init_end conn=%s pid=%s tid=%s",
+                                id(_local.conn),
+                                os.getpid(),
+                                threading.get_ident(),
+                            )
+            finally:
+                fcntl.flock(schema_lock_handle.fileno(), fcntl.LOCK_UN)
     return _local.conn
 
 
@@ -280,6 +338,33 @@ def _init_schema(conn: sqlite3.Connection):
                 logger.warning(f"Schema: {e}")
 
 
+def _execute_write(conn: sqlite3.Connection, statement_or_operation, params=None,
+                   max_attempts: int = 3):
+    """Execute and commit a write, retrying only transient SQLite lock errors."""
+    for attempt in range(max_attempts):
+        try:
+            if callable(statement_or_operation):
+                result = statement_or_operation()
+            else:
+                result = conn.execute(statement_or_operation, params or ())
+            conn.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            if "locked" not in str(exc).lower() or attempt == max_attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _retry_write(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        conn = _get_db()
+        return _execute_write(conn, lambda: function(*args, **kwargs))
+    return wrapped
+
+
+@_retry_write
 def save_pipeline(pipeline_id: str, topic: str, mode: str = "documentary",
                   word_count: int = 0, video_duration_s: float = 0,
                   video_path: str = "", thumbnail_path: str = "",
@@ -299,6 +384,7 @@ def save_pipeline(pipeline_id: str, topic: str, mode: str = "documentary",
     conn.commit()
 
 
+@_retry_write
 def save_pipeline_result(pipeline_id: str, result: dict) -> None:
     """Save pipeline result from pipeline.run() summary output."""
     video_path = result.get("video_path", "")
@@ -311,6 +397,7 @@ def save_pipeline_result(pipeline_id: str, result: dict) -> None:
     )
 
 
+@_retry_write
 def save_titles(pipeline_id: str, titles: list[str]) -> None:
     conn = _get_db()
     for i, title in enumerate(titles):
@@ -321,6 +408,7 @@ def save_titles(pipeline_id: str, titles: list[str]) -> None:
     conn.commit()
 
 
+@_retry_write
 def save_hooks(pipeline_id: str, hooks: list[dict]) -> None:
     conn = _get_db()
     for h in hooks:
@@ -336,6 +424,7 @@ def save_hooks(pipeline_id: str, hooks: list[dict]) -> None:
     conn.commit()
 
 
+@_retry_write
 def save_thumbnails(pipeline_id: str, thumbnails: list[dict]) -> None:
     conn = _get_db()
     for t in thumbnails:
@@ -347,6 +436,7 @@ def save_thumbnails(pipeline_id: str, thumbnails: list[dict]) -> None:
     conn.commit()
 
 
+@_retry_write
 def update_hook_title_performance(pipeline_id: str, stats: dict) -> None:
     """Update hooks and titles tables with actual CTR/retention from analytics.
 
@@ -404,6 +494,7 @@ def get_video_analytics_from_db(video_id: str) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
+@_retry_write
 def save_analytics(pipeline_id: str, video_id: str, stats: dict) -> None:
     conn = _get_db()
     for col, col_type in [("impressions", "INTEGER DEFAULT 0"),
@@ -433,8 +524,9 @@ def save_analytics(pipeline_id: str, video_id: str, stats: dict) -> None:
 
 
 def save_best_practice(category: str, key: str, value: str, score: float) -> None:
+    """Persist reusable knowledge with bounded recovery from transient SQLite locks."""
     conn = _get_db()
-    conn.execute("""
+    statement = """
         INSERT INTO best_practices (category, key, value, score, sample_size)
         VALUES (?, ?, ?, ?, 1)
         ON CONFLICT(category, key) DO UPDATE SET
@@ -442,8 +534,8 @@ def save_best_practice(category: str, key: str, value: str, score: float) -> Non
             score=(score * sample_size + excluded.score) / (sample_size + 1),
             sample_size=sample_size + 1,
             updated_at=datetime('now')
-    """, (category, key, value, score))
-    conn.commit()
+    """
+    _execute_write(conn, statement, (category, key, value, score))
 
 
 def get_best_practices(category: Optional[str] = None) -> list[dict]:
@@ -532,6 +624,7 @@ def get_pipeline_stats() -> dict:
 # Performance Drift Tracking
 # ──────────────────────────────────────────────
 
+@_retry_write
 def save_drift_snapshot(snapshot_date: str, metric: str,
                         current_value: float, previous_value: float,
                         pct_change: float, drift_classification: str,
@@ -601,6 +694,7 @@ def get_analytics_by_week() -> list[dict]:
 # A/B Test Tracking
 # ──────────────────────────────────────────────
 
+@_retry_write
 def save_ab_variant(pipeline_id: str, video_id: str, variant_type: str,
                     variant_index: int, variant_value: str) -> None:
     conn = _get_db()
@@ -644,6 +738,7 @@ def get_active_ab_tests() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def activate_ab_variant(test_id: int) -> None:
     conn = _get_db()
     conn.execute("""
@@ -654,6 +749,7 @@ def activate_ab_variant(test_id: int) -> None:
     conn.commit()
 
 
+@_retry_write
 def complete_ab_variant(test_id: int) -> None:
     conn = _get_db()
     conn.execute("""
@@ -664,6 +760,7 @@ def complete_ab_variant(test_id: int) -> None:
     conn.commit()
 
 
+@_retry_write
 def update_ab_metrics(test_id: int, impressions: int, ctr: float,
                       watch_time_s: float) -> None:
     conn = _get_db()
@@ -675,6 +772,7 @@ def update_ab_metrics(test_id: int, impressions: int, ctr: float,
     conn.commit()
 
 
+@_retry_write
 def set_ab_winner(test_id: int) -> None:
     conn = _get_db()
     conn.execute("""
@@ -683,6 +781,7 @@ def set_ab_winner(test_id: int) -> None:
     conn.commit()
 
 
+@_retry_write
 def set_ab_restored(test_id: int) -> None:
     conn = _get_db()
     conn.execute("""
@@ -793,6 +892,7 @@ def get_all_completed_ab_tests(limit: int = 50) -> list[dict]:
 # Selection Pressure / Evolution Memory
 # ──────────────────────────────────────────────
 
+@_retry_write
 def save_classification(pipeline_id: str, video_id: str, classification: str,
                         confidence: float, ctr: float = 0, retention: float = 0,
                         watch_time_s: float = 0, impressions: int = 0,
@@ -858,6 +958,7 @@ def get_classification_counts() -> dict:
     return result
 
 
+@_retry_write
 def save_reinforced_pattern(category: str, key: str, value: str,
                             selection_score: float, confidence: float,
                             source_pipeline_id: str = "",
@@ -905,6 +1006,7 @@ def get_reinforced_patterns(category: str | None = None,
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def save_suppressed_pattern(category: str, key: str, value: str,
                             original_score: float, decay: float = 1.0,
                             reason: str = "") -> None:
@@ -947,6 +1049,7 @@ def get_suppressed_patterns(category: str | None = None,
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def archive_dead_pattern(category: str, key: str, value: str,
                          final_score: float, suppression_count: int) -> None:
     conn = _get_db()
@@ -978,6 +1081,7 @@ def get_dead_patterns(category: str | None = None, limit: int = 30) -> list[dict
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def record_dominant_archetype(category: str, archetype: str,
                               dominance_pct: float, sample_size: int) -> None:
     conn = _get_db()
@@ -1005,6 +1109,7 @@ def get_dominant_archetypes(category: str | None = None,
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def save_topic_lineage(parent_topic: str, child_topic: str,
                        confidence: float, performance_inheritance: float) -> None:
     conn = _get_db()
@@ -1035,6 +1140,7 @@ def get_topic_lineages(parent_topic: str | None = None,
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def save_execution_log(pipeline_id: str, topic: str,
                        decision_domain: str = "",
                        decision_action: str = "",
@@ -1082,6 +1188,7 @@ def is_successful_publish(log: dict) -> bool:
             and not log.get("error"))
 
 
+@_retry_write
 def mark_topic_published(child_topic: str) -> None:
     conn = _get_db()
     conn.execute(
@@ -1291,6 +1398,7 @@ _INTELLIGENCE_SCHEMA = [
 
 # ── Trend Sources ──
 
+@_retry_write
 def save_trend_source(source: str, topic: str, trend_score: float = 0,
                        competition: float = 0, novelty: float = 0,
                        seasonality: float = 0, confidence: float = 0,
@@ -1323,6 +1431,7 @@ def get_trend_sources(limit: int = 50, min_confidence: float = 0.0) -> list[dict
 
 # ── Channel Memory ──
 
+@_retry_write
 def save_channel_memory(pipeline_id: str, topic: str, topic_hash: str,
                          title: str = "", hook: str = "",
                          thumbnail_style: str = "", narrative_style: str = "",
@@ -1361,6 +1470,7 @@ def get_memory_topic_hashes() -> set[str]:
 
 # ── Intelligence Rules ──
 
+@_retry_write
 def save_intelligence_rule(category: str, key: str, value: str,
                             score: float = 0, sample_size: int = 1,
                             confidence: float = 0, dynamic: bool = True) -> None:
@@ -1403,6 +1513,7 @@ def get_all_intelligence_rules() -> list[dict]:
 
 # ── Daily Strategies ──
 
+@_retry_write
 def save_daily_strategy(strategy_date: str, data: dict) -> None:
     conn = _get_db()
     conn.execute(
@@ -1431,6 +1542,7 @@ def get_daily_strategies(limit: int = 7) -> list[dict]:
 
 # ── Weekly Reports ──
 
+@_retry_write
 def save_weekly_report(week_start: str, week_end: str, data: dict) -> None:
     conn = _get_db()
     conn.execute(
@@ -1458,6 +1570,7 @@ def get_weekly_reports(limit: int = 4) -> list[dict]:
 
 # ── Opportunity Scores ──
 
+@_retry_write
 def save_opportunity(topic: str, source: str = "", opportunity_score: float = 0,
                       trend_score: float = 0, competition: float = 0,
                       novelty: float = 0, seasonality: float = 0,
@@ -1502,6 +1615,7 @@ def get_top_opportunities(n: int = 20) -> list[dict]:
 
 # ── Outcome Tracking ──
 
+@_retry_write
 def save_outcome(topic: str, pipeline_id: str, opportunity_score: float,
                  actual_score: float, prediction_error: float,
                  views: int = 0, ctr: float = 0, watch_time_s: float = 0,
@@ -1542,6 +1656,7 @@ def get_outcomes(limit: int = 100, min_error: float | None = None) -> list[dict]
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def save_prediction_error(outcome_id: int, component: str, weight: float,
                            component_score: float, actual_contribution: float,
                            error: float) -> None:
@@ -1584,6 +1699,7 @@ def get_scoring_weights() -> dict[str, float]:
     return {r["component"]: r["weight"] for r in rows}
 
 
+@_retry_write
 def set_scoring_weight(component: str, weight: float) -> None:
     conn = _get_db()
     conn.execute("""
@@ -1595,6 +1711,7 @@ def set_scoring_weight(component: str, weight: float) -> None:
     conn.commit()
 
 
+@_retry_write
 def reset_scoring_weights(weights: dict[str, float]) -> None:
     conn = _get_db()
     for component, weight in weights.items():
@@ -1618,6 +1735,7 @@ def get_weight_history(limit: int = 50) -> list[dict]:
 
 # ── Experiment Engine (Phase 3) ──
 
+@_retry_write
 def save_experiment(experiment_id: str, hypothesis: str, experiment_type: str,
                      topic: str, variant_a: str, variant_b: str,
                      expected_gain: float = 0, affected_metric: str = "views",
@@ -1661,6 +1779,7 @@ def get_experiments(experiment_type: str = "", status: str = "",
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def complete_experiment(experiment_id: str, winner: str,
                          statistical_confidence: float = 0,
                          sample_size: int = 0, recommendation: str = "",
@@ -1677,6 +1796,7 @@ def complete_experiment(experiment_id: str, winner: str,
     conn.commit()
 
 
+@_retry_write
 def activate_experiment(experiment_id: str, control_pipeline_id: str,
                          treatment_pipeline_id: str) -> None:
     conn = _get_db()
@@ -1694,6 +1814,7 @@ def get_active_experiments(limit: int = 20) -> list[dict]:
 
 # ── Weekly Planner (Phase 6) ──
 
+@_retry_write
 def save_weekly_plan(week_start: str, data: dict) -> None:
     conn = _get_db()
     conn.execute("""
@@ -1722,6 +1843,7 @@ def get_weekly_plans(limit: int = 4) -> list[dict]:
 
 # ── Knowledge Graph (Phase 7) ──
 
+@_retry_write
 def save_topic_keyword(topic: str, keyword: str, weight: float = 1.0) -> None:
     conn = _get_db()
     conn.execute("""
@@ -1746,6 +1868,7 @@ def get_topic_keywords(topic: str = "", limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def save_topic_relationship(source_topic: str, target_topic: str,
                              relationship_type: str = "related",
                              strength: float = 0) -> None:
@@ -1777,6 +1900,7 @@ def get_topic_relationships(topic: str = "", relationship_type: str = "",
     return [dict(r) for r in rows]
 
 
+@_retry_write
 def save_audience_topic(topic: str, audience_overlap: float = 0,
                          engagement_affinity: float = 0) -> None:
     conn = _get_db()
@@ -1799,6 +1923,7 @@ def get_audience_topics(limit: int = 100) -> list[dict]:
 
 # ── Prediction Horizon (Phase 8) ──
 
+@_retry_write
 def save_forecast(topic: str, forecast_date: str, window_days: int,
                    expected_score: float, confidence: float = 0,
                    uncertainty: float = 0, trend_momentum: float = 0,
