@@ -10,104 +10,21 @@ from mindmargin.prompts import GENERATION_MODES
 
 
 def _do_publish(topic: str, pipeline_id: str, privacy: str, playlist: str):
-    """Publish a pipeline's output to YouTube."""
-    from mindmargin.integrations.youtube import check_credentials, upload_video
-    from mindmargin.agents.thumbnail import ThumbnailAgent, pick_best_thumbnail
-    from mindmargin.agents.metadata import MetadataAgent
-    from mindmargin.analytics.memory import save_pipeline, save_titles, save_hooks, save_thumbnails
+    """Publish through the canonical instrumented production path."""
+    from mindmargin.agents.decision_executor import publish_video
     from mindmargin.core.storage import project_dir
 
-    # Check credentials
-    creds = check_credentials()
-    if not creds.get("authenticated"):
-        print(f"\n  YouTube auth required. {creds.get('error', '')}")
-        print("  See: https://console.cloud.google.com/apis/credentials")
-        return
-
-    print(f"\n  Authenticated as: {creds.get('channel_name', '?')}")
-
-    # Load script data
-    out_dir = project_dir(topic, pipeline_id)
-    script_path = out_dir / "script" / "script.json"
-    if not script_path.exists():
-        print(f"  ERROR: script.json not found at {script_path}")
-        return
-    import json as _json
-    script_data = _json.loads(script_path.read_text(encoding="utf-8"))
-
-    # Skip thumbnail regen if already generated during pipeline
-    thumb_result = {"thumbnails": {"variants": []}}
-    existing_thumbs = sorted((out_dir / "thumbnails").glob("*.png")) if (out_dir / "thumbnails").exists() else []
-    if existing_thumbs:
-        thumbnail_path = str(existing_thumbs[0])
-        thumb_result["thumbnails"]["variants"] = [{"path": str(p)} for p in existing_thumbs]
-        print(f"  Thumbnails: {len(existing_thumbs)} existing variants (skipped regen)")
-    else:
-        print("  Generating thumbnails...")
-        thumb_agent = ThumbnailAgent()
-        thumb_result = thumb_agent.run(topic, pipeline_id, script_data)
-        thumbnail_path = pick_best_thumbnail(thumb_result.get("thumbnails", {}))
-        if thumbnail_path:
-            print(f"  Thumbnails: {thumb_result['thumbnails']['variants_count']} variants")
-
-    # Generate full metadata
-    print("  Generating metadata...")
-    meta_agent = MetadataAgent()
-    meta_result = meta_agent.run(topic, pipeline_id, script_data)
-    meta = meta_result.get("metadata", {})
-
-    # Find video file
-    video_candidates = list(out_dir.glob("video/*_final.mp4"))
-    if not video_candidates:
-        print("  ERROR: No final MP4 found. Run pipeline first.")
-        return
-
-    video_path = str(video_candidates[0])
-    best_title = meta.get("best_title", topic)
-    description = meta.get("description", "")
-    tags = meta.get("tags", [])
-
-    print(f"\n  Video: {video_path}")
-    print(f"  Title: {best_title}")
-    print(f"  Privacy: {privacy}")
-    print(f"  Tags: {len(tags)} tags")
-    print(f"\n  Uploading to YouTube...")
-
-    result = upload_video(
-        video_path=video_path,
-        title=best_title,
-        description=description,
-        tags=tags,
-        category_id=meta.get("category_id", "27"),
-        privacy_status=privacy,
+    result = publish_video(
+        topic=topic,
+        pipeline_id=pipeline_id,
+        result={"output_dir": str(project_dir(topic, pipeline_id))},
+        privacy=privacy,
         playlist_id=playlist or None,
-        thumbnail_path=thumbnail_path or None,
     )
-
-    if result.get("status") == "completed":
-        vid = result["video_id"]
-        url = result["url"]
-        print(f"\n  PUBLISHED: {url}")
-
-        # Save to memory
-        save_pipeline(
-            pipeline_id=pipeline_id, topic=topic,
-            word_count=script_data.get("word_count", 0),
-            video_path=video_path,
-            thumbnail_path=thumbnail_path or "",
-            youtube_video_id=vid,
-            youtube_url=url,
-        )
-        save_titles(pipeline_id, meta.get("all_titles", []))
-        save_hooks(pipeline_id, script_data.get("hooks", []))
-        save_thumbnails(pipeline_id,
-                        thumb_result.get("thumbnails", {}).get("variants", []))
-        # Seed A/B variants for future rotation
-        try:
-            from mindmargin.analytics.ab_testing import seed_variants
-            seed_variants(pipeline_id, vid)
-        except Exception as e:
-            logger.warning(f"AB seeding skipped: {e}")
+    if result.get("duplicate_skipped"):
+        print(f"\n  Already published: {result.get('url', result.get('video_id', ''))}")
+    elif result.get("status") == "completed":
+        print(f"\n  PUBLISHED: {result.get('url', '')}")
     else:
         print(f"  Upload failed: {result.get('error', 'unknown')}")
 
