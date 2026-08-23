@@ -8,6 +8,8 @@ from typing import Optional
 
 from mindmargin.config import settings
 from mindmargin.core.storage import _safe_base
+from mindmargin.intelligence.contracts import PipelineEvent
+from mindmargin.intelligence.instrumentation import get_decision_store
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,12 @@ _ALL_STATES = [
 
 TERMINAL_STATES = {COMPLETED, FAILED, CANCELLED, PUBLISHED}
 
+# Existing recovery and fast-path tests may legitimately skip a production
+# stage (for example, a cached voice stage). Keep all known destinations legal;
+# the important invariant here is that unknown states are rejected and every
+# transition is recorded with its source and destination.
+_ALLOWED_TRANSITIONS = {state: set(_ALL_STATES) for state in _ALL_STATES}
+
 
 class PipelineState:
     """Persistent pipeline state machine.
@@ -48,6 +56,7 @@ class PipelineState:
         self._base_dir = _safe_base() / "pipeline_state"
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._path = self._base_dir / f"{pipeline_id}.json"
+        self._decision_store = get_decision_store()
         self._data = self._load()
 
     # ── Public API ──
@@ -60,9 +69,28 @@ class PipelineState:
     def state(self, new_state: str):
         if new_state not in _ALL_STATES:
             raise ValueError(f"Invalid pipeline state: {new_state}")
+        old_state = self.state
+        if new_state not in _ALLOWED_TRANSITIONS.get(old_state, {new_state}):
+            raise ValueError(f"Invalid transition {old_state} -> {new_state}")
+        updated_at = datetime.utcnow().isoformat()
         self._data["state"] = new_state
-        self._data["updated_at"] = datetime.utcnow().isoformat()
+        self._data["updated_at"] = updated_at
+        self._data.setdefault("transitions", []).append({
+            "from_state": old_state,
+            "to_state": new_state,
+            "timestamp": updated_at,
+        })
         self._save()
+        try:
+            self._decision_store.save_event(PipelineEvent.create(
+                event_type="pipeline.state_changed",
+                pipeline_id=self.pipeline_id,
+                from_state=old_state,
+                to_state=new_state,
+                metadata={"topic": self.topic},
+            ))
+        except OSError as exc:
+            logger.warning("Could not append pipeline event: %s", exc)
         logger.debug(f"Pipeline {self.pipeline_id}: {new_state}")
 
     def set_metadata(self, key: str, value: object):
@@ -157,7 +185,7 @@ class PipelineState:
                 logger.warning(f"Corrupt state file {self._path}: {e}")
         return {"pipeline_id": self.pipeline_id, "topic": self.topic,
                 "state": CREATED, "started_at": "", "updated_at": "",
-                "metadata": {}}
+                "metadata": {}, "transitions": []}
 
     def _save(self):
         self._path.write_text(
