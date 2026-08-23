@@ -1,0 +1,16 @@
+{
+  "acceptance_basis": "Explicit bounded authorization to document and accept the risk without modifying PiperSettings.model_path",
+  "accepted_at_utc": "2026-08-20T18:51:33+00:00",
+  "accepted_by_role": "Project governance authority / explicit R4 Remediation authorization issuer",
+  "conditions": [
+    "No code/config change in R4",
+    "No production authorization granted",
+    "No production rollout granted",
+    "Reopen if runtime/security/deployment impact is demonstrated"
+  ],
+  "expiry": "Before any future Production Authorization decision",
+  "remediation": "DEFERRED",
+  "risk_id": "R4-RISK-PIPER-MODEL-PATH",
+  "status": "ACCEPTED-RISK",
+  "subject": "PiperSettings.model_path protected-namespace warning"
+}

@@ -1,0 +1,14 @@
+{
+  "approval_chain_status": "READINESS_ONLY_PENDING_PRODUCTION_APPROVAL",
+  "candidate_id": "r4-rc-e1990e48a2c9109f714d",
+  "candidate_status": "CREATED_IMMUTABLE_SNAPSHOT",
+  "immutable_reference": "release_candidates/r4-rc-e1990e48a2c9109f714d/release_snapshot.tar.gz",
+  "operator": "UNASSIGNED",
+  "production_approver": "UNASSIGNED",
+  "production_authorization": "NOT_GRANTED",
+  "production_rollout": "NOT_GRANTED",
+  "release_owner": "Project governance owner \u2014 pending named release owner",
+  "source_reference": "git:9bde981e5602446fb2fd9ec8bb741c986656f4cd",
+  "technical_reviewer": "UNASSIGNED",
+  "workspace_is_release_candidate": false
+}
