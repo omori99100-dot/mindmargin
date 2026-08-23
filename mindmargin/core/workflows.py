@@ -15,6 +15,8 @@ from mindmargin.core.hardening import generate_correlation_id, get_correlation_i
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_STEP_TIMEOUT_S = 300.0
+
 
 class WorkflowState(str, Enum):
     PENDING = "pending"
@@ -119,6 +121,10 @@ class WorkflowEngine:
     def __init__(self, persist_dir: str = ""):
         self._workflows: dict[str, Workflow] = {}
         self._lock = threading.RLock()
+        # Track engine-owned worker lifetimes so callers/fixtures can wait before
+        # releasing a persistence root. This preserves the existing async start()
+        # and cancel() return semantics while closing the cleanup race.
+        self._worker_threads: set[threading.Thread] = set()
         root = Path(persist_dir or settings.storage.temp_root)
         self._persist_dir = root / "workflows"
         self._persist_dir.mkdir(parents=True, exist_ok=True)
@@ -171,7 +177,18 @@ class WorkflowEngine:
             wf.started_at = utcnow()
             self._save(wf)
         publish("workflow.started", data={"workflow_id": workflow_id}, source="workflow")
-        threading.Thread(target=self._execute_ready, args=(workflow_id,), daemon=True).start()
+
+        def _run_worker():
+            try:
+                self._execute_ready(workflow_id)
+            finally:
+                with self._lock:
+                    self._worker_threads.discard(threading.current_thread())
+
+        worker = threading.Thread(target=_run_worker, daemon=True)
+        with self._lock:
+            self._worker_threads.add(worker)
+        worker.start()
         return True
 
     def get(self, workflow_id: str) -> Optional[Workflow]:
@@ -216,11 +233,31 @@ class WorkflowEngine:
                     step.retry_count = 0
             wf.state = WorkflowState.RUNNING
             self._save(wf)
-        threading.Thread(target=self._execute_ready, args=(workflow_id,), daemon=True).start()
+        def _run_worker():
+            try:
+                self._execute_ready(workflow_id)
+            finally:
+                with self._lock:
+                    self._worker_threads.discard(threading.current_thread())
+
+        worker = threading.Thread(target=_run_worker, daemon=True)
+        with self._lock:
+            self._worker_threads.add(worker)
+        worker.start()
         return True
 
     def _execute_ready(self, workflow_id: str):
         wid = workflow_id
+        with self._lock:
+            current = self._workflows.get(wid)
+            if not current:
+                return
+            remaining_timeout = sum(
+                max(step.timeout_s, DEFAULT_STEP_TIMEOUT_S)
+                for step in current.steps.values()
+                if not step.is_terminal
+            )
+        join_timeout = max(60.0, remaining_timeout)
 
         def _execute():
             while True:
@@ -261,6 +298,16 @@ class WorkflowEngine:
 
         t = threading.Thread(target=_execute, daemon=True)
         t.start()
+        t.join(timeout=join_timeout)
+        if t.is_alive():
+            logger.error(
+                "Workflow %s execution exceeded bounded timeout %.1fs",
+                wid,
+                join_timeout,
+            )
+            raise TimeoutError(
+                f"Workflow '{wid}' execution exceeded timeout {join_timeout:.1f}s"
+            )
 
     def _ready_steps(self, workflow_id: str) -> list[WorkflowStep]:
         with self._lock:
@@ -295,27 +342,26 @@ class WorkflowEngine:
             return
 
         try:
-            if step.timeout_s > 0:
-                result = [None]
-                error = [None]
+            effective_timeout = step.timeout_s if step.timeout_s > 0 else DEFAULT_STEP_TIMEOUT_S
+            result = [None]
+            error = [None]
 
-                def _run():
-                    try:
-                        result[0] = handler(step.metadata)
-                    except Exception as e:
-                        error[0] = e
+            def _run():
+                try:
+                    result[0] = handler(step.metadata)
+                except Exception as e:
+                    error[0] = e
 
-                t = threading.Thread(target=_run, daemon=True)
-                t.start()
-                t.join(timeout=step.timeout_s)
-                if t.is_alive():
-                    raise TimeoutError(f"Step '{step.name}' timed out after {step.timeout_s}s")
-                if error[0]:
-                    raise error[0]
-                self._complete_step(workflow_id, step_id, result[0] or {})
-            else:
-                res = handler(step.metadata)
-                self._complete_step(workflow_id, step_id, res or {})
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=effective_timeout)
+            if t.is_alive():
+                raise TimeoutError(
+                    f"Step '{step.name}' timed out after {effective_timeout}s"
+                )
+            if error[0]:
+                raise error[0]
+            self._complete_step(workflow_id, step_id, result[0] or {})
         except Exception as e:
             self._fail_step(workflow_id, step_id, str(e))
 
@@ -353,7 +399,17 @@ class WorkflowEngine:
                 publish("workflow.step_failed", data={"workflow_id": workflow_id, "step_id": step_id, "error": error},
                         source="workflow")
         if should_retry:
-            threading.Thread(target=self._execute_step, args=(workflow_id, step_id), daemon=True).start()
+            def _run_retry_worker():
+                try:
+                    self._execute_step(workflow_id, step_id)
+                finally:
+                    with self._lock:
+                        self._worker_threads.discard(threading.current_thread())
+
+            retry_worker = threading.Thread(target=_run_retry_worker, daemon=True)
+            with self._lock:
+                self._worker_threads.add(retry_worker)
+            retry_worker.start()
 
     @property
     def workflows(self) -> dict[str, Workflow]:
@@ -363,7 +419,12 @@ class WorkflowEngine:
         return self._persist_dir / f"{wf.workflow_id}.json"
 
     def _save(self, wf: Workflow):
-        self._path_for(wf).write_text(json.dumps(wf.to_dict(), indent=2), encoding="utf-8")
+        path = self._path_for(wf)
+        # A worker can outlive a test/request-owned temporary directory. Recreate
+        # the directory before writing so recovery state is not lost and daemon
+        # threads do not emit unhandled FileNotFoundError warnings.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(wf.to_dict(), indent=2), encoding="utf-8")
 
     def _delete(self, wf: Workflow):
         p = self._path_for(wf)

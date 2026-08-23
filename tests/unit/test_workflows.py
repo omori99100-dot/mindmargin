@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+import mindmargin.core.workflows as workflows_module
 from mindmargin.core.workflows import (
     WorkflowEngine,
     Workflow,
@@ -19,6 +20,18 @@ def engine():
     tmpdir = tempfile.mkdtemp()
     e = WorkflowEngine(persist_dir=tmpdir)
     yield e
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with e._lock:
+            workers = list(e._worker_threads)
+        if not workers:
+            break
+        for worker in workers:
+            worker.join(timeout=0.1)
+    with e._lock:
+        assert not any(worker.is_alive() for worker in e._worker_threads), (
+            "workflow worker outlived its persistence-root owner"
+        )
     import shutil
     try:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -207,6 +220,26 @@ class TestWorkflowCancel:
         wf = engine.get(wid)
         assert wf.state == WorkflowState.CANCELLED
 
+    def test_concurrent_workflow_persistence_lifecycle(self, engine):
+        def slow(meta):
+            time.sleep(0.03)
+            return {"ok": True}
+
+        workflow_ids = []
+        for index in range(8):
+            wid = engine.create(f"parallel_{index}", [{"step_id": "s1"}])
+            engine.register_step_handler(wid, "s1", slow)
+            workflow_ids.append(wid)
+            assert engine.start(wid)
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if all(engine.get(wid).is_terminal for wid in workflow_ids):
+                break
+            time.sleep(0.01)
+
+        assert all(engine.get(wid).state == WorkflowState.COMPLETED for wid in workflow_ids)
+
     def test_cancel_terminal_fails(self, engine):
         wid = engine.create("done", [{"step_id": "s1"}])
         engine.start(wid)
@@ -339,6 +372,31 @@ class TestWorkflowEdgeCases:
         wf = engine.get(wid)
         assert wf.steps["s1"].state == StepState.COMPLETED
         assert results == ["done"]
+
+    def test_default_timeout_bounds_zero_timeout_handler(self, engine, monkeypatch):
+        monkeypatch.setattr(workflows_module, "DEFAULT_STEP_TIMEOUT_S", 0.05)
+
+        def hung_handler(meta):
+            time.sleep(1.0)
+            return {"unexpected": True}
+
+        wid = engine.create("bounded", [{"step_id": "s1", "timeout_s": 0}])
+        engine.register_step_handler(wid, "s1", hung_handler)
+        started = time.monotonic()
+        assert engine.start(wid)
+
+        deadline = started + 1.0
+        while time.monotonic() < deadline:
+            wf = engine.get(wid)
+            if wf.steps["s1"].state == StepState.FAILED:
+                break
+            time.sleep(0.01)
+
+        elapsed = time.monotonic() - started
+        wf = engine.get(wid)
+        assert wf.steps["s1"].state == StepState.FAILED
+        assert "timed out" in wf.steps["s1"].error
+        assert elapsed < 0.5
 
     def test_delete_workflow_file(self, engine):
         wid = engine.create("test", [{"step_id": "s1"}])
