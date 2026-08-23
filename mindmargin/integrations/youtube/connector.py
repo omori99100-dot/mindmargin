@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -145,10 +146,29 @@ class YouTubeConnector:
     def upload_video(self, file_path: str, title: str, description: str = "",
                      tags: list[str] = None, category_id: str = "27",
                      privacy: str = "private", playlist_id: str = "",
-                     thumbnail_path: str = "") -> dict:
+                     thumbnail_path: str = "", pipeline_id: str = "",
+                     correlation_id: str = "") -> dict:
+        pipeline_id = pipeline_id or "upload_" + hashlib.sha256(f"{file_path}:{title}".encode()).hexdigest()[:16]
+        correlation_id = correlation_id or pipeline_id
+        from mindmargin.intelligence.instrumentation import record_decision, record_event
         if not self._quota.can_upload():
+            if pipeline_id:
+                decision = record_decision("publish_eligibility", pipeline_id=pipeline_id, context={"entry_point": "youtube.connector", "gate": "quota"}, options=[{"option": "publish"}, {"option": "skip"}], selected_option="skip", rationale="connector quota exhausted", confidence=1.0, source="integrations.youtube.connector.upload_video", status="completed", failure_reason="Quota exhausted", idempotency_key=f"{pipeline_id}:connector:quota_exhausted", correlation_id=correlation_id or pipeline_id)
+                record_event("publish.blocked", pipeline_id, stage="eligibility", reason="Quota exhausted", decision_id=decision.get("decision_id", ""), correlation_id=correlation_id or pipeline_id)
             return {"status": "failed", "error": "Quota exhausted"}
 
+        decision = record_decision(
+            "publish_eligibility",
+            pipeline_id=pipeline_id,
+            context={"entry_point": "youtube.connector", "privacy": privacy},
+            options=[{"option": "publish"}, {"option": "skip"}],
+            selected_option="publish",
+            rationale="connector quota and authentication gate passed",
+            confidence=1.0,
+            source="integrations.youtube.connector.upload_video",
+            idempotency_key=f"{pipeline_id}:connector:eligibility:{file_path}:{title}",
+            correlation_id=correlation_id or pipeline_id,
+        ) if pipeline_id else None
         record = UploadRecord(
             title=title,
             status="uploading",
@@ -163,14 +183,18 @@ class YouTubeConnector:
         start = time.monotonic()
         try:
             result = self._do_upload(file_path, title, description, tags or [],
-                                     category_id, privacy, playlist_id, thumbnail_path)
+                                     category_id, privacy, playlist_id, thumbnail_path,
+                                     pipeline_id=pipeline_id, correlation_id=correlation_id or pipeline_id)
             record.video_id = result.get("video_id", "")
-            record.status = "completed"
+            record.status = "completed" if result.get("status") == "completed" else "failed"
             record.completed_at = datetime.now(timezone.utc).isoformat()
             record.duration_s = time.monotonic() - start
-            self._quota.used += QUOTA_COST_PER_UPLOAD
-            self._quota.uploads += 1
-            self._save_quota()
+            if record.status == "completed":
+                self._quota.used += QUOTA_COST_PER_UPLOAD
+                self._quota.uploads += 1
+                self._save_quota()
+            else:
+                record.error = result.get("error", "upload failed")
         except Exception as e:
             record.status = "failed"
             record.error = str(e)
@@ -180,16 +204,25 @@ class YouTubeConnector:
 
         self._records.append(record)
         self._save_history()
+        if pipeline_id:
+            if record.status == "completed":
+                decision = record_decision("publish", pipeline_id=pipeline_id, context={"entry_point": "youtube.connector", "title": title}, selected_option="publish", rationale="connector upload completed", confidence=1.0, actual_outcome={"status": "completed", "video_id": record.video_id}, video_id=record.video_id, publish_id=pipeline_id, source="integrations.youtube.connector.upload_video", idempotency_key=f"{pipeline_id}:connector:publish:{record.video_id}", correlation_id=correlation_id or pipeline_id)
+                record_event("publish.completed", pipeline_id, stage="publish", decision_id=decision.get("decision_id", ""), video_id=record.video_id, publish_id=pipeline_id, correlation_id=correlation_id or pipeline_id)
+            else:
+                decision = record_decision("publish", pipeline_id=pipeline_id, context={"entry_point": "youtube.connector", "title": title}, selected_option="fail", rationale="connector upload failed", confidence=1.0, actual_outcome={"status": "failed", "error": record.error}, status="failed", failure_reason=record.error, source="integrations.youtube.connector.upload_video", idempotency_key=f"{pipeline_id}:connector:failure:{record.error}", correlation_id=correlation_id or pipeline_id)
+                record_event("publish.failed", pipeline_id, stage="publish", reason=record.error, decision_id=decision.get("decision_id", ""), publish_id=pipeline_id, correlation_id=correlation_id or pipeline_id)
         return record.to_dict()
 
     def _do_upload(self, file_path: str, title: str, description: str,
                    tags: list[str], category_id: str, privacy: str,
-                   playlist_id: str, thumbnail_path: str) -> dict:
+                   playlist_id: str, thumbnail_path: str, pipeline_id: str = "",
+                   correlation_id: str = "") -> dict:
         from mindmargin.integrations.youtube.client import YouTubeClient
         client = YouTubeClient()
         result = client.upload(
             file_path=file_path, title=title, description=description,
             tags=tags, category_id=category_id, privacy=privacy,
+            pipeline_id=pipeline_id,
         )
         if result.get("video_id") and playlist_id:
             client.add_to_playlist(result["video_id"], playlist_id)
