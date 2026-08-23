@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 
 from mindmargin.config import settings
 from mindmargin.core.events import publish
+from mindmargin.intelligence.instrumentation import record_decision, record_event
 from mindmargin.core.hardening import utcnow, utcnow_ts
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,19 @@ class Scheduler:
                         (datetime.now(timezone.utc) + timedelta(seconds=sched.interval_s)).isoformat()
                     )
                     self._save(sched)
+                record_decision(
+                    "schedule_reschedule", pipeline_id=schedule_id,
+                    context={"schedule_id": schedule_id, "name": sched.name},
+                    options=[{"option": "next_cron"}, {"option": "next_interval"}],
+                    selected_option="next_cron" if sched.cron else "next_interval",
+                    rationale="schedule completed and next run was computed by existing scheduler policy",
+                    confidence=1.0,
+                    expected_outcome={"metric": "scheduler_success", "direction": "increase"},
+                    source="core.scheduler._execute",
+                    idempotency_key=f"{schedule_id}:reschedule:{sched.next_run_at}",
+                    correlation_id=schedule_id,
+                )
+                record_event("scheduler.rescheduled", schedule_id, stage="scheduler", reason="execution_completed", metadata={"next_run_at": sched.next_run_at})
                 publish("scheduler.executed", data={"schedule_id": schedule_id, "name": sched.name},
                         source="scheduler")
             except Exception as e:
@@ -300,6 +314,21 @@ class Scheduler:
                 with self._lock:
                     sched.failed_runs += 1
                     self._save(sched)
+                record_decision(
+                    "schedule_retry", pipeline_id=schedule_id,
+                    context={"schedule_id": schedule_id, "name": sched.name, "failed_runs": sched.failed_runs},
+                    options=[{"option": "retry"}, {"option": "reschedule"}, {"option": "stop"}],
+                    selected_option="retry",
+                    rationale="scheduler retained the active schedule after handler failure",
+                    confidence=1.0,
+                    evidence=[{"error": str(e), "failed_runs": sched.failed_runs}],
+                    source="core.scheduler._execute",
+                    status="failed",
+                    failure_reason=str(e),
+                    idempotency_key=f"{schedule_id}:retry:{sched.failed_runs}:{str(e)}",
+                    correlation_id=schedule_id,
+                )
+                record_event("scheduler.retry", schedule_id, stage="scheduler", reason=str(e), metadata={"failed_runs": sched.failed_runs})
                 publish("scheduler.failed", data={"schedule_id": schedule_id, "error": str(e)},
                         source="scheduler")
 
@@ -384,11 +413,14 @@ class Scheduler:
                     if sched.cron:
                         self._cron_fields[sched.schedule_id] = parse_cron(sched.cron)
                     if sched.schedule_id not in self._handlers:
+                        # Handler binding is process-local; it is not evidence that
+                        # the persisted schedule was intentionally paused. Keep the
+                        # durable state ACTIVE and let the runtime report the missing
+                        # binding until register_handler_for() is called.
                         missing_handlers.append(sched.name)
-                        sched.state = ScheduleState.PAUSED
                     count += 1
             except Exception as e:
                 logger.warning("Failed to recover schedule %s: %s", f.name, e)
         if missing_handlers:
-            logger.warning("Recovered schedules with missing handlers (paused): %s", missing_handlers)
+            logger.warning("Recovered active schedules awaiting handler binding: %s", missing_handlers)
         return count
