@@ -18,7 +18,20 @@ class TestDailyJob:
         """Should handle gracefully when YouTube auth is unavailable."""
         mock_exec.return_value = {"status": "completed", "selected_topic": "mock"}
         result = run_feedback_loop()
-        assert result["status"] in ("completed", "failed", "partial")
+        assert result["status"] == "skipped"
+        assert result["decision_executor"]["status"] == "completed"
+
+    @pytest.mark.parametrize("nested_result, expected_status", [
+        ({"status": "skipped", "reason": "low_confidence"}, "skipped"),
+        ({"status": "failed", "error": "pipeline failed"}, "failed"),
+        ({"status": "completed", "publish_status": "blocked"}, "blocked"),
+    ])
+    @patch("mindmargin.agents.decision_executor.execute_top_decision")
+    def test_outer_status_reflects_nested_executor_outcome(self, mock_exec, nested_result, expected_status):
+        mock_exec.return_value = nested_result
+        result = run_feedback_loop()
+        assert result["status"] == expected_status
+        assert result["decision_executor"]["status"] == nested_result["status"]
 
     @patch("mindmargin.agents.decision_executor.execute_top_decision")
     def test_run_daily_job(self, mock_exec):

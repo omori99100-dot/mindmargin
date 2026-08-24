@@ -122,7 +122,7 @@ def execute_pipeline(topic: str, quick: bool = False,
 
 
 def publish_video(topic: str, pipeline_id: str, result: dict,
-                  privacy: str = "unlisted", playlist_id: str | None = None) -> dict:
+                  privacy: str = "public", playlist_id: str | None = None) -> dict:
     """Publish a completed pipeline's video to YouTube."""
     import time as _time
     from mindmargin.integrations.youtube import check_credentials, upload_video
@@ -476,7 +476,7 @@ def _check_daily_publish_cap() -> tuple[bool, str]:
         return False, ""
 
 
-def execute_top_decision(quick: bool = False, privacy: str = "unlisted",
+def execute_top_decision(quick: bool = False, privacy: str = "public",
                          auto_publish: bool = True) -> dict:
     """Run one complete autonomous cycle: brain -> topic -> pipeline -> publish -> log.
 

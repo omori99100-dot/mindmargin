@@ -130,8 +130,20 @@ def run_feedback_loop() -> dict:
     total_best_practices = len(get_best_practices())
 
     sel_memory = selection_result.get("memory", {})
+    executor_status = exec_result.get("status", "failed")
+    publish_status = exec_result.get("publish_status", "")
+    if not publish_status:
+        publish_status = exec_result.get("steps", {}).get("publish", {}).get("status", "")
+    if publish_status in {"completed", "skipped", "failed", "blocked", "disabled"}:
+        outer_status = publish_status
+    elif executor_status in {"skipped", "failed", "blocked", "disabled"}:
+        outer_status = executor_status
+    elif executor_status == "completed":
+        outer_status = "completed" if exec_result.get("video_id") else "skipped"
+    else:
+        outer_status = "failed"
     result = {
-        "status": "completed",
+        "status": outer_status,
         "analytics_collected": analytics_result.get("videos_collected", 0),
         "analytics_errors": analytics_result.get("errors", 0),
         "patterns": {

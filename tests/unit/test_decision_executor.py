@@ -1,5 +1,6 @@
 """Unit tests for decision_executor — autonomous execution cycle."""
 
+import inspect
 import pytest
 from unittest.mock import MagicMock, patch
 from mindmargin.agents.decision_executor import (
@@ -181,6 +182,10 @@ class TestLogExecution:
 
 
 class TestExecuteTopDecision:
+    def test_autonomous_privacy_defaults_to_public(self):
+        assert inspect.signature(publish_video).parameters["privacy"].default == "public"
+        assert inspect.signature(execute_top_decision).parameters["privacy"].default == "public"
+
     @patch("mindmargin.analytics.channel_brain.run_brain_cycle")
     @patch("mindmargin.analytics.growth_engine.run_growth_analysis")
     @patch("mindmargin.analytics.memory.get_top_opportunities")
