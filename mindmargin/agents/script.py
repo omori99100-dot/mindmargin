@@ -187,10 +187,22 @@ class ScriptAgent:
                  provider_manager: Optional[ProviderManager] = None):
         self.name = "script"
         self._pm = provider_manager or create_default_manager()
-        self.llm = self._pm.get()
         self.mode = mode
         self.mode_config = GENERATION_MODES.get(mode, GENERATION_MODES["documentary"])
         self.use_templates = use_templates
+
+    async def _llm_failover(self, method: str, **kwargs):
+        """Route one LLM call through ProviderManager's per-call failover."""
+        _, result = await self._pm.with_failover(method, **kwargs)
+        return result
+
+    def _llm_failover_sync(self, method: str, **kwargs):
+        """Synchronous bridge for per-call failover used by sync pipeline stages."""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self._llm_failover(method, **kwargs))
+        finally:
+            loop.close()
 
     def run(self, topic: str, pipeline_id: str, research: dict) -> dict:
         logger.info(f"ScriptAgent: generating documentary script for '{topic}' (mode: {self.mode})")
@@ -328,7 +340,7 @@ class ScriptAgent:
 
     async def _warmup(self):
         try:
-            await self.llm.generate("Say hello", task="hook", temperature=0.1)
+            await self._llm_failover("generate", prompt="Say hello", task="hook", temperature=0.1)
         except Exception as e:
             logger.debug(f"LLM warm-up failed (non-critical): {e}")
 
@@ -337,7 +349,7 @@ class ScriptAgent:
             prompt = build_optimized_title_prompt(topic, ruleset)
         else:
             prompt = TITLE_PROMPT.format(topic=topic)
-        result = await self.llm.generate_json(prompt, system=TITLE_SYSTEM, task="title")
+        result = await self._llm_failover("generate_json", prompt=prompt, system=TITLE_SYSTEM, task="title")
         if isinstance(result, list) and len(result) >= 3:
             # Extract titles from structured result
             titles = []
@@ -354,7 +366,7 @@ class ScriptAgent:
             prompt = build_optimized_hook_prompt(topic, ruleset)
         else:
             prompt = HOOK_PROMPT.format(topic=topic)
-        result = await self.llm.generate_json(prompt, system=HOOK_SYSTEM, task="hook_gen")
+        result = await self._llm_failover("generate_json", prompt=prompt, system=HOOK_SYSTEM, task="hook_gen")
         if isinstance(result, list) and len(result) >= 3:
             return result[:5]
         return [
@@ -391,8 +403,9 @@ class ScriptAgent:
     async def _generate_one_section(self, sec_id: int, name: str, title: str,
                                      target_dur: int, prompt: str,
                                      system: str, temperature: float) -> dict:
-        text = await self.llm.generate_section(
-            prompt, name, system=system, temperature=temperature
+        text = await self._llm_failover(
+            "generate_section", prompt=prompt, section_name=name,
+            system=system, temperature=temperature
         )
         if not text:
             text = FALLBACK_SECTION_TEXT.format(
@@ -464,8 +477,9 @@ class ScriptAgent:
             else:
                 prompt = f"Write the {title} section of a documentary about {topic}. Write 200-400 words."
 
-            text = self.llm.generate_section_sync(
-                prompt, name, system=self.mode_config["system"],
+            text = self._llm_failover_sync(
+                "generate_section", prompt=prompt, section_name=name,
+                system=self.mode_config["system"],
                 temperature=self.mode_config["temperature"]
             )
             if text and len(text.split()) >= MIN_SECTION_WORD_COUNT:
@@ -503,8 +517,9 @@ class ScriptAgent:
         for attempt in range(2):
             try:
                 prompt = SCENE_PLANNING_PROMPT.format(topic=topic)
-                result = self.llm.generate_json_sync(
-                    prompt + f"\n\nSection text:\n{section_text}",
+                result = self._llm_failover_sync(
+                    "generate_json",
+                    prompt=prompt + f"\n\nSection text:\n{section_text}",
                     system=SCENE_PLANNING_SYSTEM,
                     task="scene_planning"
                 )
@@ -551,8 +566,9 @@ class ScriptAgent:
         """Generate thumbnail design concepts."""
         try:
             prompt = THUMBNAIL_CONCEPT_PROMPT.format(topic=topic)
-            result = self.llm.generate_json_sync(
-                prompt, system=THUMBNAIL_SYSTEM, task="thumbnail_concepts"
+            result = self._llm_failover_sync(
+                "generate_json", prompt=prompt, system=THUMBNAIL_SYSTEM,
+                task="thumbnail_concepts"
             )
             if isinstance(result, list) and len(result) > 0:
                 logger.info(f"Thumbnail concepts: {len(result)} generated")
@@ -592,8 +608,9 @@ class ScriptAgent:
                 topic=topic, title=title, word_count=word_count,
                 estimated_duration=estimated_duration, section_count=section_count
             )
-            result = self.llm.generate_json_sync(
-                prompt, system=PRODUCTION_REPORT_SYSTEM, task="production_report"
+            result = self._llm_failover_sync(
+                "generate_json", prompt=prompt, system=PRODUCTION_REPORT_SYSTEM,
+                task="production_report"
             )
             if isinstance(result, dict) and result.get("story_score") is not None:
                 logger.info(f"Production report: story={result.get('story_score')}, "
@@ -629,8 +646,9 @@ class ScriptAgent:
                 prompt = QUALITY_SCORING_PROMPT.format(
                     text=sec["text"][:2000], section_name=sec["name"], topic=topic
                 )
-                result = self.llm.generate_json_sync(
-                    prompt, system=QUALITY_SYSTEM, task="quality_scoring"
+                result = self._llm_failover_sync(
+                    "generate_json", prompt=prompt, system=QUALITY_SYSTEM,
+                    task="quality_scoring"
                 )
                 if isinstance(result, dict) and "overall_score" in result:
                     sec["quality_scores"] = result
@@ -662,7 +680,7 @@ class ScriptAgent:
             prompt = build_optimized_seo_prompt(topic, topic, ruleset)
         else:
             prompt = SEO_PROMPT.format(title=topic, topic=topic)
-        result = await self.llm.generate_json(prompt, system=SEO_SYSTEM, task="seo")
+        result = await self._llm_failover("generate_json", prompt=prompt, system=SEO_SYSTEM, task="seo")
         if isinstance(result, dict) and "description" in result:
             return result
         tag = topic.lower().replace(" ", "")

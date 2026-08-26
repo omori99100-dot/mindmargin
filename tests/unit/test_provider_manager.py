@@ -139,6 +139,26 @@ class TestProviderManagerFailover:
                 assert result == "ok"
                 assert name == "b"
 
+    @pytest.mark.anyio
+    async def test_per_call_failover_recovers_then_uses_primary_next_call(self):
+        from mindmargin.integrations.manager import ProviderManager
+        from mindmargin.integrations.ollama_provider import OllamaProvider
+        from mindmargin.integrations.gemini_provider import GeminiProvider
+
+        mgr = ProviderManager()
+        gemini = GeminiProvider(api_key="test-key")
+        ollama = OllamaProvider(model="fallback")
+        mgr.register("gemini", gemini)
+        mgr.register("ollama", ollama)
+        mgr.set_default("gemini")
+
+        with patch.object(gemini, "generate", new=AsyncMock(side_effect=["", "primary-ok"])):
+            with patch.object(ollama, "generate", new=AsyncMock(return_value="fallback-ok")):
+                name1, result1 = await mgr.with_failover("generate", prompt="first", task="test")
+                name2, result2 = await mgr.with_failover("generate", prompt="second", task="test")
+                assert (name1, result1) == ("ollama", "fallback-ok")
+                assert (name2, result2) == ("gemini", "primary-ok")
+
 
 class TestProviderManagerHealth:
     @pytest.mark.anyio
@@ -193,3 +213,13 @@ class TestCreateDefaultManager:
         with patch.dict(os.environ, {}, clear=True):
             mgr = create_default_manager()
             assert len(mgr.available) >= 1
+            assert mgr.get().provider_name == "ollama"
+
+    def test_gemini_is_default_when_key_present(self):
+        from mindmargin.integrations.manager import create_default_manager
+        import os
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True):
+            mgr = create_default_manager()
+            assert "gemini" in mgr.available
+            assert mgr.get().provider_name == "gemini"

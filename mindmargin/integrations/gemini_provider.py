@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, model: str = "gemini-1.5-flash",
+    def __init__(self, model: str = "gemini-flash-latest",
                  api_key: Optional[str] = None,
                  timeout: int = 120):
         self._api_key = api_key or os.getenv("GEMINI_API_KEY", "")

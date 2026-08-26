@@ -50,6 +50,8 @@ class ProviderManager:
         if gm._has_key:
             self.register("gemini", gm)
             count += 1
+        if "gemini" in self._providers:
+            self.set_default("gemini")
         logger.info("Registered %d built-in LLM providers", count)
         return count
 
