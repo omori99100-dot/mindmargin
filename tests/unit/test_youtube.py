@@ -82,3 +82,99 @@ def test_post_comment_auth_failure(monkeypatch):
     import mindmargin.integrations.youtube as yt
     result = yt.post_comment("test_vid", "Hello")
     assert result is None
+
+
+def _patch_credential_check_env(monkeypatch, yt_client, request):
+    from pathlib import Path
+
+    class MockChannels:
+        def list(self, part, mine):
+            return request
+
+    class MockYT:
+        def channels(self):
+            return MockChannels()
+
+    monkeypatch.setattr(yt_client, "_has_google_libs", lambda: True)
+    monkeypatch.setattr(yt_client, "_find_client_secrets", lambda: Path("client_secrets.json"))
+    monkeypatch.setattr(yt_client, "_get_authenticated_service", lambda: MockYT())
+
+
+def test_check_credentials_retries_transient_ssl_error_then_succeeds(monkeypatch):
+    import mindmargin.integrations.youtube.client as yt_client
+
+    class FlakyChannelsList:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self):
+            self.calls += 1
+            if self.calls < 3:
+                raise ConnectionResetError("EOF occurred in violation of protocol (_ssl.c:2437)")
+            return {"items": [{"snippet": {"title": "Omar Mohamed"}}]}
+
+    request = FlakyChannelsList()
+    slept = []
+    _patch_credential_check_env(monkeypatch, yt_client, request)
+    monkeypatch.setattr(yt_client.time, "sleep", lambda s: slept.append(s))
+
+    import mindmargin.integrations.youtube as yt
+    result = yt.check_credentials()
+
+    assert result["authenticated"] is True
+    assert result["channel_name"] == "Omar Mohamed"
+    assert result["error"] == ""
+    assert request.calls == 3
+    assert len(slept) == 2
+
+
+def test_check_credentials_fails_after_exhausting_retries(monkeypatch):
+    import mindmargin.integrations.youtube.client as yt_client
+
+    class AlwaysFailingChannelsList:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self):
+            self.calls += 1
+            raise ConnectionResetError("EOF occurred in violation of protocol (_ssl.c:2437)")
+
+    request = AlwaysFailingChannelsList()
+    slept = []
+    _patch_credential_check_env(monkeypatch, yt_client, request)
+    monkeypatch.setattr(yt_client.time, "sleep", lambda s: slept.append(s))
+
+    import mindmargin.integrations.youtube as yt
+    result = yt.check_credentials()
+
+    assert result["authenticated"] is False
+    assert "EOF occurred in violation of protocol" in result["error"]
+    assert request.calls == 3
+    assert len(slept) == 2
+
+
+def test_check_credentials_http_401_fails_fast_without_retry(monkeypatch):
+    import mindmargin.integrations.youtube.client as yt_client
+    from googleapiclient.errors import HttpError
+
+    class FakeHttpResp:
+        status = 401
+        reason = "Unauthorized"
+
+    class UnauthorizedChannelsList:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self):
+            self.calls += 1
+            raise HttpError(FakeHttpResp(), b'{"error":{"message":"Unauthorized"}}', uri="test")
+
+    request = UnauthorizedChannelsList()
+    _patch_credential_check_env(monkeypatch, yt_client, request)
+
+    import mindmargin.integrations.youtube as yt
+    result = yt.check_credentials()
+
+    assert result["authenticated"] is False
+    assert request.calls == 1
+    assert "Unauthorized" in result["error"]

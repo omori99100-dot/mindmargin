@@ -168,8 +168,13 @@ def _get_analytics_service():
     return _analytics_client
 
 
-def check_credentials() -> dict:
-    """Check if YouTube credentials are configured and valid. Returns status dict."""
+def check_credentials(max_retries: int = 3) -> dict:
+    """Check if YouTube credentials are configured and valid. Returns status dict.
+
+    The channels().list() probe retries up to ``max_retries`` times on
+    transient failures (network/SSL, 5xx, 429) with exponential backoff and
+    jitter, mirroring the upload path. Fails fast on HTTP 400/401/403.
+    """
     has_libs = _has_google_libs()
     has_secrets = _find_client_secrets() is not None
     has_token = _find_token() is not None
@@ -187,17 +192,49 @@ def check_credentials() -> dict:
     if not has_secrets:
         result["error"] = "Place client_secrets.json in project root"
         return result
+    from googleapiclient.errors import HttpError
+
     try:
         yt = _get_authenticated_service()
         if not yt:
             return result
-        resp = yt.channels().list(part="snippet", mine=True).execute()
-        items = resp.get("items", [])
-        if items:
-            result["authenticated"] = True
-            result["channel_name"] = items[0]["snippet"]["title"]
-        else:
-            result["error"] = "No channel found for this account"
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = yt.channels().list(part="snippet", mine=True).execute()
+                items = resp.get("items", [])
+                if items:
+                    result["authenticated"] = True
+                    result["channel_name"] = items[0]["snippet"]["title"]
+                else:
+                    result["error"] = "No channel found for this account"
+                return result
+            except HttpError as e:
+                last_error = e
+                status_code = e.resp.status if hasattr(e, "resp") else 0
+                error_reason = str(e)
+                if status_code in (400, 401, 403):
+                    logger.error(f"Credential check failed (HTTP {status_code}): {error_reason}")
+                    result["error"] = error_reason
+                    return result
+                if attempt < max_retries:
+                    delay = min(2 ** attempt + random.uniform(0, 1), 60)
+                    logger.warning(
+                        f"Credential check attempt {attempt} failed (HTTP {status_code}): {error_reason}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    time.sleep(delay)
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    delay = min(2 ** attempt + random.uniform(0, 1), 60)
+                    logger.warning(
+                        f"Credential check attempt {attempt} failed: {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    time.sleep(delay)
+        logger.error(f"Credential check failed after {max_retries} attempts: {last_error}")
+        result["error"] = str(last_error) if last_error is not None else "Credential check failed"
     except Exception as e:
         result["error"] = str(e)
     return result
