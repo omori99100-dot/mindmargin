@@ -1,6 +1,7 @@
 ﻿"""Tests for all LLM provider implementations."""
 
 import json
+import httpx
 import pytest
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -293,11 +294,10 @@ class TestGeminiProvider:
     @pytest.mark.anyio
     async def test_generate_success(self, mock_client_class):
         from mindmargin.integrations.gemini_provider import GeminiProvider
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
+        mock_resp = httpx.Response(200, request=httpx.Request("POST", "http://localhost"), json={
             "candidates": [{"content": {"parts": [{"text": "Hello from Gemini"}]}}],
             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5},
-        }
+        })
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value = mock_client
         mock_client.post.return_value = mock_resp
