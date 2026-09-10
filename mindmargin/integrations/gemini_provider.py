@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Optional
@@ -83,6 +84,30 @@ class GeminiProvider(LLMProvider):
         except Exception:
             return None
 
+    def _parse_retry_seconds_from_body(self, resp: httpx.Response) -> Optional[float]:
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        message = (data.get("error") or {}).get("message")
+        if not isinstance(message, str):
+            return None
+        match = re.search(r"retry\s+in\s+([\d.]+)\s*s", message, re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    def _retry_delay_for_429(self, resp: httpx.Response, attempt: int) -> float:
+        body_delay = self._parse_retry_seconds_from_body(resp)
+        if body_delay is not None:
+            return min(body_delay, 120)
+        return self._retry_after(resp) or self._backoff_delay(attempt)
+
     async def _post(self, url: str, payload: dict) -> httpx.Response:
         for attempt in range(1, self._max_retries + 1):
             await self._bucket.wait()
@@ -102,7 +127,7 @@ class GeminiProvider(LLMProvider):
             if resp.status_code == 429:
                 logger.warning(f"Gemini 429 response body: {resp.text[:500]}")
                 if attempt < self._max_retries:
-                    delay = self._retry_after(resp) or self._backoff_delay(attempt)
+                    delay = self._retry_delay_for_429(resp, attempt)
                     logger.warning(
                         f"Gemini POST attempt {attempt} got HTTP 429. "
                         f"Retrying in {delay:.1f}s..."
@@ -149,7 +174,7 @@ class GeminiProvider(LLMProvider):
                 await resp.aclose()
                 await client.aclose()
                 if attempt < self._max_retries:
-                    delay = self._retry_after(resp) or self._backoff_delay(attempt)
+                    delay = self._retry_delay_for_429(resp, attempt)
                     logger.warning(
                         f"Gemini stream attempt {attempt} got HTTP 429. "
                         f"Retrying in {delay:.1f}s..."

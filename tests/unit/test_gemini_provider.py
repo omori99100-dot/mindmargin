@@ -125,3 +125,58 @@ class TestGeminiRetry:
         assert (first, second) == ("a", "b")
         assert len(clock.sleeps) >= 1
         assert clock.sleeps[0] > 0
+
+    @patch("httpx.AsyncClient")
+    @pytest.mark.anyio
+    async def test_retry_delay_parsed_from_429_body_message(self, mock_client_class, monkeypatch):
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(gp.asyncio, "sleep", fake_sleep)
+        body = {
+            "error": {
+                "code": 429,
+                "status": "RESOURCE_EXHAUSTED",
+                "message": (
+                    "You exceeded your current quota, please check your plan and billing "
+                    "details. For more information on this error, head to: "
+                    "https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your "
+                    "current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded "
+                    "for metric: generativelanguage.googleapis.com/"
+                    "generate_content_free_tier_requests, limit: 5, model: "
+                    "gemini-3.8-flash\nPlease retry in 27.97032315s."
+                ),
+            },
+        }
+        client = _client_for([
+            _response(429, json=body),
+            _response(200, json={"candidates": [{"content": {"parts": [{"text": "quota-aware"}]}}]}),
+        ])
+        mock_client_class.return_value = client
+        provider = self._provider(monkeypatch)
+        result = await provider.generate("hi", task="test")
+        assert result == "quota-aware"
+        assert client.post.call_count == 2
+        assert sleeps == [pytest.approx(27.97032315, abs=0.01)]
+
+    @patch("httpx.AsyncClient")
+    @pytest.mark.anyio
+    async def test_retry_delay_falls_back_to_header_when_body_unparseable(self, mock_client_class, monkeypatch):
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(gp.asyncio, "sleep", fake_sleep)
+        client = _client_for([
+            _response(429, headers={"Retry-After": "2"}, text="not-json"),
+            _response(200, json={"candidates": [{"content": {"parts": [{"text": "header"}]}}]}),
+        ])
+        mock_client_class.return_value = client
+        provider = self._provider(monkeypatch)
+        result = await provider.generate("hi", task="test")
+        assert result == "header"
+        assert client.post.call_count == 2
+        assert sleeps == [pytest.approx(2.0, abs=0.01)]
