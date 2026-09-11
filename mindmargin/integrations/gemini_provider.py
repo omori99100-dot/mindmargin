@@ -43,7 +43,7 @@ class GeminiProvider(LLMProvider):
                  timeout: int = 120,
                  max_retries: int = 3,
                  requests_per_minute: float = 15,
-                 burst_capacity: int = 3):
+                 burst_capacity: int = 1):
         self._api_key = api_key or os.getenv("GEMINI_API_KEY", "")
         self.model = model
         self._timeout = timeout

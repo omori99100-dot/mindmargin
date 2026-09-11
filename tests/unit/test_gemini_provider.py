@@ -82,7 +82,7 @@ class TestGeminiRetry:
             _response(200, json={"candidates": [{"content": {"parts": [{"text": "slow"}]}}]}),
         ])
         mock_client_class.return_value = client
-        provider = self._provider(monkeypatch)
+        provider = self._provider(monkeypatch, burst_capacity=3)
         result = await provider.generate("hi", task="test")
         assert result == "slow"
         assert client.post.call_count == 2
@@ -155,7 +155,7 @@ class TestGeminiRetry:
             _response(200, json={"candidates": [{"content": {"parts": [{"text": "quota-aware"}]}}]}),
         ])
         mock_client_class.return_value = client
-        provider = self._provider(monkeypatch)
+        provider = self._provider(monkeypatch, burst_capacity=3)
         result = await provider.generate("hi", task="test")
         assert result == "quota-aware"
         assert client.post.call_count == 2
@@ -175,7 +175,7 @@ class TestGeminiRetry:
             _response(200, json={"candidates": [{"content": {"parts": [{"text": "header"}]}}]}),
         ])
         mock_client_class.return_value = client
-        provider = self._provider(monkeypatch)
+        provider = self._provider(monkeypatch, burst_capacity=3)
         result = await provider.generate("hi", task="test")
         assert result == "header"
         assert client.post.call_count == 2

@@ -297,13 +297,10 @@ class ScriptAgent:
             seo = self._template_seo(topic)
             return titles, hooks, sections, seo
         await self._warmup()
-        titles_task = asyncio.create_task(self._generate_titles(topic, ruleset))
-        hooks_task = asyncio.create_task(self._generate_hooks(topic, ruleset))
-        sections_task = asyncio.create_task(self._generate_sections(topic, research, ruleset))
-        seo_task = asyncio.create_task(self._generate_seo(topic, ruleset))
-        titles, hooks, sections, seo = await asyncio.gather(
-            titles_task, hooks_task, sections_task, seo_task
-        )
+        titles = await self._generate_titles(topic, ruleset)
+        hooks = await self._generate_hooks(topic, ruleset)
+        sections = await self._generate_sections(topic, research, ruleset)
+        seo = await self._generate_seo(topic, ruleset)
         return titles, hooks, sections, seo
 
     def _template_sections(self, topic: str, research: dict) -> list[dict]:
