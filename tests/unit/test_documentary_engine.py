@@ -343,6 +343,78 @@ class TestScriptAgentDocumentary:
         assert len(GENERATION_MODES["documentary"]["system"]) > 50
 
 
+class TestMergeScoresBatch:
+    """Test the batched _merge_scores quality scoring."""
+
+    def _make_sections(self, names):
+        return [
+            {"name": name, "title": name.replace("_", " ").title(),
+             "text": "word " * 100, "word_count": 100,
+             "duration_target_s": 120, "mode": "documentary"}
+            for name in names
+        ]
+
+    def test_merge_scores_single_call_for_multiple_sections(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        valid_scores = {"overall_score": 75, "narrative_arc": 80}
+        llm_response = {name: dict(valid_scores) for name in ("hook", "context", "closing")}
+
+        with patch.object(agent, "_llm_failover_sync", return_value=llm_response) as mock_call:
+            result = agent._merge_scores(sections, "Nokia")
+            mock_call.assert_called_once()
+            assert mock_call.call_args.kwargs["task"] == "quality_scoring_batch"
+
+        assert len(result) == 3
+        assert all(sec["quality_scores"]["overall_score"] == 75 for sec in result)
+
+    def test_merge_scores_maps_results_by_section_name(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        llm_response = {
+            "hook": {"overall_score": 90, "narrative_arc": 95},
+            "context": {"overall_score": 40, "narrative_arc": 30},
+            "closing": {"overall_score": 60, "narrative_arc": 55},
+        }
+
+        with patch.object(agent, "_llm_failover_sync", return_value=llm_response):
+            result = agent._merge_scores(sections, "Nokia")
+
+        by_name = {sec["name"]: sec["quality_scores"] for sec in result}
+        assert by_name["hook"]["overall_score"] == 90
+        assert by_name["context"]["overall_score"] == 40
+        assert by_name["closing"]["overall_score"] == 60
+        assert by_name["hook"]["narrative_arc"] == 95
+        assert by_name["context"]["narrative_arc"] == 30
+
+    def test_merge_scores_falls_back_to_defaults_when_section_missing_from_response(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        llm_response = {
+            "hook": {"overall_score": 90, "narrative_arc": 95},
+            "closing": {"overall_score": 60, "narrative_arc": 55},
+        }
+
+        with patch.object(agent, "_llm_failover_sync", return_value=llm_response):
+            result = agent._merge_scores(sections, "Nokia")
+
+        by_name = {sec["name"]: sec["quality_scores"] for sec in result}
+        assert by_name["hook"]["overall_score"] == 90
+        assert by_name["closing"]["overall_score"] == 60
+        assert by_name["context"] == agent._default_scores()
+        assert by_name["context"]["overall_score"] == 50
+
+    def test_merge_scores_falls_back_to_defaults_when_llm_raises(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+
+        with patch.object(agent, "_llm_failover_sync", side_effect=RuntimeError("upstream down")):
+            result = agent._merge_scores(sections, "Nokia")
+
+        assert len(result) == 3
+        assert all(sec["quality_scores"] == agent._default_scores() for sec in result)
+
+
 class TestPromptTemplates:
     """Test that all prompt templates are well-formed."""
 

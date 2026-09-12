@@ -24,6 +24,7 @@ from mindmargin.prompts import (
     SEO_SYSTEM, SEO_PROMPT,
     SCRIPT_SYSTEM,
     QUALITY_SYSTEM, QUALITY_SCORING_PROMPT,
+    QUALITY_SCORING_BATCH_PROMPT,
     GENERATION_MODES,
     SCENE_PLANNING_SYSTEM, SCENE_PLANNING_PROMPT,
     THUMBNAIL_SYSTEM, THUMBNAIL_CONCEPT_PROMPT,
@@ -636,25 +637,30 @@ class ScriptAgent:
     # ═══════════════════════════════════════════════════════════════════
 
     def _merge_scores(self, sections: list[dict], topic: str) -> list[dict]:
-        """Score each section for quality metrics."""
+        """Score all sections in a single batched LLM call."""
+        sections_payload = "\n\n".join(
+            f"SECTION_ID: {sec['name']}\nTEXT: {sec['text'][:800]}"
+            for sec in sections
+        )
+        prompt = QUALITY_SCORING_BATCH_PROMPT.format(
+            sections_payload=sections_payload, topic=topic
+        )
+        try:
+            result = self._llm_failover_sync(
+                "generate_json", prompt=prompt, system=QUALITY_SYSTEM,
+                task="quality_scoring_batch"
+            )
+            scores_by_id = result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.warning(f"Batch quality scoring failed: {e}")
+            scores_by_id = {}
+
         scored = []
         for sec in sections:
-            try:
-                prompt = QUALITY_SCORING_PROMPT.format(
-                    text=sec["text"][:2000], section_name=sec["name"], topic=topic
-                )
-                result = self._llm_failover_sync(
-                    "generate_json", prompt=prompt, system=QUALITY_SYSTEM,
-                    task="quality_scoring"
-                )
-                if isinstance(result, dict) and "overall_score" in result:
-                    sec["quality_scores"] = result
-                    logger.debug(f"Quality scores for '{sec['name']}': overall={result.get('overall_score')}")
-                else:
-                    logger.warning(f"Quality scoring for '{sec['name']}': LLM returned invalid result, using defaults")
-                    sec["quality_scores"] = self._default_scores()
-            except Exception as e:
-                logger.warning(f"Quality scoring failed for '{sec['name']}': {e}")
+            section_scores = scores_by_id.get(sec["name"])
+            if isinstance(section_scores, dict) and "overall_score" in section_scores:
+                sec["quality_scores"] = section_scores
+            else:
                 sec["quality_scores"] = self._default_scores()
             scored.append(sec)
         return scored

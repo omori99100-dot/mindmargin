@@ -316,6 +316,30 @@ Also check for REJECTION criteria:
 
 Return as JSON with scores, rejections (list), and improvement_suggestions."""
 
+QUALITY_SCORING_BATCH_PROMPT = """Evaluate these documentary script sections against professional standards.
+
+Topic: {topic}
+
+Sections:
+{sections_payload}
+
+For EACH section (keyed by its SECTION_ID exactly as given), rate 0-100:
+1. narrative_arc
+2. specificity
+3. emotional_depth
+4. pacing
+5. originality
+6. transitions
+7. information_density
+8. behavioral_insight
+9. documentary_quality
+10. overall_score
+
+Also check REJECTION criteria per section: under_1500_words, repetition, no_story_arc, weak_transitions, wikipedia_style, ai_sounding, unsupported_claims
+
+Return ONLY a JSON object where each key is the exact SECTION_ID and each value is an object with the 10 scores, a "rejections" list, and "improvement_suggestions". Example shape:
+{{"section_id_here": {{"narrative_arc": 80, ..., "overall_score": 75, "rejections": [], "improvement_suggestions": "..."}}}}"""
+
 # ═══════════════════════════════════════════════════════════════════
 #  PRODUCTION REPORT
 # ═══════════════════════════════════════════════════════════════════
