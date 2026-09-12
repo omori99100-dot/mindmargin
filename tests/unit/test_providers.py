@@ -338,7 +338,7 @@ class TestGeminiProvider:
     def test_default_model_name(self):
         from mindmargin.integrations.gemini_provider import GeminiProvider
         p = GeminiProvider()
-        assert p.model_name == "gemini-flash-latest"
+        assert p.model_name == "gemini-2.5-flash"
 
 
 # â”€â”€ Backward compatibility: OllamaClient â”€â”€

@@ -38,7 +38,7 @@ class _TokenBucket:
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, model: str = "gemini-flash-latest",
+    def __init__(self, model: str = "gemini-2.5-flash",
                  api_key: Optional[str] = None,
                  timeout: int = 120,
                  max_retries: int = 3,
