@@ -208,6 +208,23 @@ For each paragraph (3-5 sentences), create a scene with:
 
 Write 5-8 scenes per section. Return as JSON array."""
 
+SCENE_PLANNING_BATCH_PROMPT = """Plan visual scenes for these documentary sections about {topic}.
+
+Sections:
+{sections_payload}
+
+For EACH section (keyed by its exact SECTION_ID), for each paragraph (3-5 sentences) create a scene with:
+- scene_description: What the viewer sees (1-2 sentences)
+- broll_suggestion: Specific B-roll footage to search for
+- footage_keywords: 3-5 search terms for stock footage
+- camera_movement: Static, pan_left, pan_right, zoom_in, zoom_out, tracking, drone
+- on_screen_text: Key text/numbers to display (if any)
+- visual_elements: Charts, maps, logos, documents, newspaper clippings to show
+- duration_s: Estimated seconds this scene covers
+- emotion: The emotional tone of this visual
+
+Write 5-8 scenes per section. Return ONLY a JSON object where each key is the exact SECTION_ID and each value is a JSON array of scene objects for that section."""
+
 # ═══════════════════════════════════════════════════════════════════
 #  HOOK OPTIMIZATION
 # ═══════════════════════════════════════════════════════════════════

@@ -27,6 +27,7 @@ from mindmargin.prompts import (
     QUALITY_SCORING_BATCH_PROMPT,
     GENERATION_MODES,
     SCENE_PLANNING_SYSTEM, SCENE_PLANNING_PROMPT,
+    SCENE_PLANNING_BATCH_PROMPT,
     THUMBNAIL_SYSTEM, THUMBNAIL_CONCEPT_PROMPT,
     PRODUCTION_REPORT_SYSTEM, PRODUCTION_REPORT_PROMPT,
 )
@@ -501,47 +502,44 @@ class ScriptAgent:
     # ═══════════════════════════════════════════════════════════════════
 
     def _generate_scene_plans(self, sections: list[dict], topic: str) -> list[dict]:
-        """Generate scene plans for visual diversity in each section."""
+        """Generate scene plans for all sections in a single batched LLM call."""
+        sections_payload = "\n\n".join(
+            f"SECTION_ID: {sec['name']}\nSECTION_TEXT: {sec['text'][:1000]}"
+            for sec in sections
+        )
+        plans_by_id = self._request_scene_plans_batch(sections_payload, topic)
+
         for sec in sections:
-            plan = self._generate_single_scene_plan(sec, topic)
-            sec["scene_plan"] = plan
+            raw_plan = plans_by_id.get(sec["name"]) if isinstance(plans_by_id, dict) else None
+            clean, reason = validate_scene_plan(raw_plan)
+            if not reason:
+                logger.info(f"Scene plan for '{sec['name']}': {len(clean)} scenes generated")
+                sec["scene_plan"] = clean
+            else:
+                logger.warning(f"Scene plan for '{sec['name']}': {reason}, using default")
+                sec["scene_plan"] = self._default_scene_plan(sec)
         return sections
 
-    def _generate_single_scene_plan(self, sec: dict, topic: str) -> list[dict]:
-        """Generate scene plan for one section with validation + retry."""
-        name = sec["name"]
-        section_text = sec['text'][:1000]
-
-        for attempt in range(2):
-            try:
-                prompt = SCENE_PLANNING_PROMPT.format(topic=topic)
-                result = self._llm_failover_sync(
-                    "generate_json",
-                    prompt=prompt + f"\n\nSection text:\n{section_text}",
-                    system=SCENE_PLANNING_SYSTEM,
-                    task="scene_planning"
-                )
-                clean, reason = validate_scene_plan(result)
-                if not reason:
-                    logger.info(f"Scene plan for '{name}': {len(clean)} scenes generated")
-                    return clean
-                logger.warning(
-                    f"Scene plan for '{name}' attempt {attempt + 1} invalid: {reason}"
-                )
-                if attempt == 0:
-                    section_text += (
-                        "\n\nIMPORTANT: Response MUST be a JSON array of objects. "
-                        "Each object MUST have exactly these keys: "
-                        "scene_description, broll_suggestion, footage_keywords, "
-                        "camera_movement, on_screen_text, visual_elements, "
-                        "duration_s, emotion. No strings. No text outside JSON."
-                    )
-            except Exception as e:
-                logger.warning(f"Scene plan generation failed for '{name}' attempt {attempt + 1}: {e}")
-
-        fallback = self._default_scene_plan(sec)
-        logger.warning(f"Scene plan for '{name}': all attempts failed, using default")
-        return fallback
+    def _request_scene_plans_batch(self, sections_payload: str, topic: str, retry: bool = True) -> dict:
+        try:
+            prompt = SCENE_PLANNING_BATCH_PROMPT.format(
+                topic=topic, sections_payload=sections_payload
+            )
+            result = self._llm_failover_sync(
+                "generate_json", prompt=prompt, system=SCENE_PLANNING_SYSTEM,
+                task="scene_planning_batch"
+            )
+            if isinstance(result, dict) and result:
+                return result
+            if retry:
+                logger.warning("Scene plan batch returned invalid result, retrying once")
+                return self._request_scene_plans_batch(sections_payload, topic, retry=False)
+            return {}
+        except Exception as e:
+            logger.warning(f"Scene plan batch generation failed: {e}")
+            if retry:
+                return self._request_scene_plans_batch(sections_payload, topic, retry=False)
+            return {}
 
     def _default_scene_plan(self, section: dict) -> list[dict]:
         """Generate a basic scene plan when LLM fails."""

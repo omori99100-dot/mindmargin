@@ -415,6 +415,108 @@ class TestMergeScoresBatch:
         assert all(sec["quality_scores"] == agent._default_scores() for sec in result)
 
 
+class TestScenePlansBatch:
+    """Test the batched scene plan generation."""
+
+    def _make_sections(self, names):
+        return [
+            {"name": name, "title": name.replace("_", " ").title(),
+             "text": "word " * 100, "word_count": 100,
+             "duration_target_s": 120, "mode": "documentary"}
+            for name in names
+        ]
+
+    def _scene(self, label="scene"):
+        return {
+            "scene_description": f"{label} description",
+            "broll_suggestion": "b-roll",
+            "footage_keywords": ["footage", label],
+            "camera_movement": "static",
+            "on_screen_text": "",
+            "visual_elements": [],
+            "duration_s": 30,
+            "emotion": "neutral",
+        }
+
+    def test_scene_plans_single_call_for_multiple_sections(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        llm_response = {name: [self._scene(name)] for name in ("hook", "context", "closing")}
+
+        with patch.object(agent, "_llm_failover_sync", return_value=llm_response) as mock_call:
+            result = agent._generate_scene_plans(sections, "Nokia")
+            mock_call.assert_called_once()
+            assert mock_call.call_args.kwargs["task"] == "scene_planning_batch"
+
+        assert len(result) == 3
+        assert all(sec["scene_plan"] == llm_response[sec["name"]] for sec in result)
+
+    def test_scene_plans_maps_results_by_section_name(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        hook_scenes = [self._scene("hook")]
+        context_scenes = [self._scene("context"), self._scene("context2")]
+        closing_scenes = [self._scene("closing")]
+        llm_response = {
+            "hook": hook_scenes,
+            "context": context_scenes,
+            "closing": closing_scenes,
+        }
+
+        with patch.object(agent, "_llm_failover_sync", return_value=llm_response):
+            result = agent._generate_scene_plans(sections, "Nokia")
+
+        by_name = {sec["name"]: sec["scene_plan"] for sec in result}
+        assert by_name["hook"] == hook_scenes
+        assert by_name["context"] == context_scenes
+        assert by_name["closing"] == closing_scenes
+        assert len(by_name["context"]) == 2
+
+    def test_scene_plans_falls_back_to_default_when_section_missing(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        llm_response = {
+            "hook": [self._scene("hook")],
+            "closing": [self._scene("closing")],
+        }
+
+        with patch.object(agent, "_llm_failover_sync", return_value=llm_response):
+            result = agent._generate_scene_plans(sections, "Nokia")
+
+        by_name = {sec["name"]: sec["scene_plan"] for sec in result}
+        assert by_name["hook"] == llm_response["hook"]
+        assert by_name["closing"] == llm_response["closing"]
+        assert by_name["context"] == agent._default_scene_plan(sections[1])
+
+    def test_scene_plans_retries_once_on_invalid_response_then_succeeds(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+        llm_response = {name: [self._scene(name)] for name in ("hook", "context", "closing")}
+
+        with patch.object(
+            agent, "_llm_failover_sync",
+            side_effect=[{}, llm_response]
+        ) as mock_call:
+            result = agent._generate_scene_plans(sections, "Nokia")
+
+        assert mock_call.call_count == 2
+        assert all(sec["scene_plan"] == llm_response[sec["name"]] for sec in result)
+
+    def test_scene_plans_falls_back_to_default_after_both_attempts_fail(self):
+        agent = ScriptAgent(use_templates=True)
+        sections = self._make_sections(["hook", "context", "closing"])
+
+        with patch.object(
+            agent, "_llm_failover_sync",
+            side_effect=[{}, {}]
+        ) as mock_call:
+            agent._generate_scene_plans(sections, "Nokia")
+
+        assert mock_call.call_count == 2
+        for sec in sections:
+            assert sec["scene_plan"] == agent._default_scene_plan(sec)
+
+
 class TestPromptTemplates:
     """Test that all prompt templates are well-formed."""
 
