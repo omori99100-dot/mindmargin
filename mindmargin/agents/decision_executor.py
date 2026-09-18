@@ -476,6 +476,81 @@ def _check_daily_publish_cap() -> tuple[bool, str]:
         return False, ""
 
 
+def _report_publish_quality(out_dir: Path, pipeline_id: str) -> dict | None:
+    """Informational quality report at publish decision time (non-blocking).
+
+    Reads per-section quality_scores from the pipeline's saved script.json and
+    reports the aggregate against the thresholds already defined in
+    mindmargin.agents.script (MIN_WORD_COUNT, QUALITY_PASS_THRESHOLD). This
+    gate never blocks publication; it only records evidence for the cycle log
+    and the decision ledger.
+    """
+    try:
+        from mindmargin.agents.script import MIN_WORD_COUNT, QUALITY_PASS_THRESHOLD
+        from mindmargin.intelligence.instrumentation import record_decision, record_event
+        import json as _json
+
+        script_path = out_dir / "script" / "script.json"
+        if not script_path.exists():
+            logger.warning(f"Quality report skipped: script.json not found at {script_path}")
+            return None
+
+        script_data = _json.loads(script_path.read_text(encoding="utf-8"))
+        sections = script_data.get("sections", [])
+        scores = [
+            float(sec["quality_scores"]["overall_score"])
+            for sec in sections
+            if isinstance(sec, dict)
+            and isinstance(sec.get("quality_scores"), dict)
+            and isinstance(sec["quality_scores"].get("overall_score"), (int, float))
+        ]
+
+        word_count = script_data.get("word_count")
+        mean_score = sum(scores) / len(scores) if scores else None
+        report = {
+            "word_count": word_count,
+            "min_word_count": MIN_WORD_COUNT,
+            "sections": len(sections),
+            "scored_sections": len(scores),
+            "mean_quality_score": round(mean_score, 2) if mean_score is not None else None,
+            "quality_pass_threshold": QUALITY_PASS_THRESHOLD,
+        }
+
+        if len(sections) == 0:
+            logger.warning("Quality report: script has 0 sections (informational, not blocking)")
+        elif mean_score is None:
+            logger.warning("Quality report: no quality_scores on sections (informational, not blocking)")
+        else:
+            word_ok = word_count is None or word_count >= MIN_WORD_COUNT
+            score_ok = mean_score >= QUALITY_PASS_THRESHOLD
+            status = "PASSED" if (score_ok and word_ok) else ("PARTIAL" if (score_ok or word_ok) else "LOW")
+            logger.info(
+                f"Quality report: mean overall_score={mean_score:.2f}/100 "
+                f"({len(scores)}/{len(sections)} scored) word_count={word_count} "
+                f"(min {MIN_WORD_COUNT}) -> {status} (informational, not blocking)"
+            )
+
+        record_decision(
+            "publish_quality",
+            pipeline_id=pipeline_id,
+            context=report,
+            options=[{"option": "publish"}, {"option": "block"}],
+            selected_option="publish",
+            rationale="quality report recorded at publish decision (informational, non-blocking)",
+            confidence=1.0,
+            evidence=[{"gate": "quality_report", "report": report}],
+            source="agents.decision_executor._report_publish_quality",
+            status="completed",
+            idempotency_key=f"{pipeline_id}:publish_quality:{mean_score if mean_score is not None else 'N/A'}:{word_count}",
+            correlation_id=pipeline_id,
+        )
+        record_event("publish.quality", pipeline_id, stage="eligibility", metadata=report)
+        return report
+    except Exception as e:
+        logger.warning(f"Quality report failed (informational, not blocking): {e}")
+        return None
+
+
 def execute_top_decision(quick: bool = False, privacy: str = "public",
                          auto_publish: bool = True) -> dict:
     """Run one complete autonomous cycle: brain -> topic -> pipeline -> publish -> log.
@@ -634,6 +709,10 @@ def execute_top_decision(quick: bool = False, privacy: str = "public",
     pub_url = ""
     if auto_publish:
         logger.info("Publish gate checks starting...")
+        # Quality report (informational only, never blocks publication)
+        quality_report = _report_publish_quality(Path(pipe_result.get("output_dir", "")), pipeline_id)
+        if quality_report:
+            cycle["steps"]["quality"] = quality_report
         # Channel health gate
         health_blocked, health_reason = _check_channel_health()
         if health_blocked:
