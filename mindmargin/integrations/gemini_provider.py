@@ -125,7 +125,6 @@ class GeminiProvider(LLMProvider):
                     continue
                 raise
             if resp.status_code == 429:
-                logger.warning(f"Gemini 429 response body: {resp.text[:500]}")
                 if attempt < self._max_retries:
                     delay = self._retry_delay_for_429(resp, attempt)
                     logger.warning(
@@ -170,7 +169,6 @@ class GeminiProvider(LLMProvider):
                     continue
                 raise
             if resp.status_code == 429:
-                logger.warning(f"Gemini 429 response body: {resp.text[:500]}")
                 await resp.aclose()
                 await client.aclose()
                 if attempt < self._max_retries:
