@@ -123,16 +123,6 @@ class Pipeline:
             logger.info(f"Agent: {name}")
             logger.info(("-" * 40))
 
-            # Cache check for voice and editing
-            if name == "voice" and self._cache:
-                script = self.state.get("script", {}).get("script", {})
-                script_hash = hash_dict(script)
-                if self._cache.check("voice_script", script_hash):
-                    logger.info("[cache] voice script unchanged, skipping voice generation")
-                    self._log("cache_hit", "voice", metadata={"key": "voice_script"})
-                    self.state[name] = {"status": "skipped", "voice": {"segments": []}}
-                    continue
-
             try:
                 result = self._run_with_retry(agent, name)
                 self.state[name] = result
@@ -141,12 +131,6 @@ class Pipeline:
 
                 if result.get("status") == "failed":
                     raise PipelineError(f"{name} failed: {result.get('error', 'unknown')}")
-
-                # Update cache after successful stage
-                if name == "script" and self._cache:
-                    script_data = result.get("script", {})
-                    script_hash = hash_dict(script_data)
-                    self._cache.update("voice_script", script_hash)
 
                 self.timer.lap(name)
                 self._record_stage_timing(name)
