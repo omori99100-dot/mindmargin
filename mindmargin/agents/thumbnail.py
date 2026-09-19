@@ -103,6 +103,7 @@ class ThumbnailAgent:
 
         # Score and rank variants using thumbnail_concepts if available
         thumbnail_concepts = script_data.get("thumbnail_concepts", [])
+        best_concept = None
         if thumbnail_concepts:
             best_concept = max(
                 thumbnail_concepts,
@@ -117,6 +118,7 @@ class ThumbnailAgent:
             "variants_count": len(variants),
             "variants": variants,
             "primary": variants[0] if variants else {},
+            "best_concept": best_concept if thumbnail_concepts else None,
         }
         from mindmargin.core.storage import write_text
         import json
@@ -198,9 +200,31 @@ class ThumbnailAgent:
         return None
 
 
-def pick_best_thumbnail(manifest: dict) -> Optional[str]:
-    """Pick the primary thumbnail from a manifest (first variant)."""
+def pick_best_thumbnail(manifest: dict, best_concept: Optional[dict] = None) -> Optional[str]:
+    """Pick the thumbnail variant whose style best matches the winning
+    LLM-scored concept (composition/contrast_level). Falls back to the
+    first variant if no concept is provided or no style match is found."""
     variants = manifest.get("variants", [])
-    if variants:
+    if not variants:
+        return None
+
+    if not best_concept:
         return variants[0].get("path")
-    return None
+
+    composition = (best_concept.get("composition") or "").lower()
+    contrast_level = (best_concept.get("contrast_level") or "").lower()
+
+    preferred_style = None
+    if composition in ("split", "diagonal"):
+        preferred_style = "split_dark_light"
+    elif contrast_level in ("high", "extreme"):
+        preferred_style = "minimal"
+    elif composition == "center":
+        preferred_style = "bottom_bar"
+
+    if preferred_style:
+        for v in variants:
+            if v.get("style") == preferred_style:
+                return v.get("path")
+
+    return variants[0].get("path")

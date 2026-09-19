@@ -228,7 +228,10 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
         logger.info("Generating thumbnails (no pre-generated found)...")
         thumb_agent = ThumbnailAgent()
         thumb_result = thumb_agent.run(topic, pipeline_id, script_data)
-        thumbnail_path = pick_best_thumbnail(thumb_result.get("thumbnails", {}))
+        thumbnail_path = pick_best_thumbnail(
+            thumb_result.get("thumbnails", {}),
+            thumb_result.get("thumbnails", {}).get("best_concept"),
+        )
         variants = thumb_result.get("thumbnails", {}).get("variants", [])
         record_decision(
             "thumbnail_selection", pipeline_id=pipeline_id,
