@@ -331,6 +331,14 @@ def _feed_winner_back(winner: dict) -> None:
 # Main rotation cycle
 # ──────────────────────────────────────────────
 
+# NOTE (2026-09): A/B thumbnail rotation currently returns False on most CI
+# runs because GitHub Actions runners are ephemeral — only data/mindmargin.db
+# is cached between runs, not the thumbnails/ or output/ directories from
+# prior pipelines. This is expected, non-blocking behavior (logged as
+# "Thumbnail unavailable"), not a bug. Deferred until channel has enough
+# published history to warrant persistent thumbnail storage (e.g. S3 or
+# DB-embedded images). See conversation log 2026-09-19 for full diagnosis.
+
 def run_ab_rotation_cycle(dry_run: bool = False) -> dict:
     """Execute one full A/B rotation cycle across all eligible pipelines.
 
