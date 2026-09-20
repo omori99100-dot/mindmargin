@@ -208,10 +208,31 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
     # Thumbnails — check for pre-generated (parallel Phase 5D)
     thumb_result = {"thumbnails": {"variants": []}}
     thumbnail_path = None
-    existing_thumbs = sorted((out_dir / "thumbnails").glob("*.png")) if (out_dir / "thumbnails").exists() else []
+    thumb_dir = out_dir / "thumbnails"
+    manifest_path = thumb_dir / "thumbnail_manifest.json"
+    existing_thumbs = sorted(thumb_dir.glob("*.png")) if thumb_dir.exists() else []
     if existing_thumbs:
-        thumbnail_path = str(existing_thumbs[0])
-        thumb_result["thumbnails"]["variants"] = [{"path": str(p)} for p in existing_thumbs]
+        manifest = None
+        if manifest_path.exists():
+            try:
+                import json as _json
+                manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"Failed to read thumbnail_manifest.json: {e}")
+                manifest = None
+
+        if manifest and manifest.get("variants"):
+            thumb_result["thumbnails"] = manifest
+            thumbnail_path = pick_best_thumbnail(manifest, manifest.get("best_concept"))
+            logger.info(
+                f"Thumbnails: {len(existing_thumbs)} existing variants (parallel gen), "
+                f"selected via manifest concept match"
+            )
+        else:
+            thumbnail_path = str(existing_thumbs[0])
+            thumb_result["thumbnails"]["variants"] = [{"path": str(p)} for p in existing_thumbs]
+            logger.info(f"Thumbnails: {len(existing_thumbs)} existing variants (parallel gen, no manifest)")
+
         record_decision(
             "thumbnail_selection", pipeline_id=pipeline_id,
             context={"topic": topic},
@@ -223,7 +244,6 @@ def publish_video(topic: str, pipeline_id: str, result: dict,
             idempotency_key=f"{pipeline_id}:thumbnail_selection:{thumbnail_path}",
             correlation_id=pipeline_id,
         )
-        logger.info(f"Thumbnails: {len(existing_thumbs)} existing variants (parallel gen)")
     else:
         logger.info("Generating thumbnails (no pre-generated found)...")
         thumb_agent = ThumbnailAgent()
