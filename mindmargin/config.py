@@ -20,6 +20,8 @@ class LLMSettings(BaseModel):
     openai_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     gemini_model: str = "gemini-1.5-flash"
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-120b"
     openai_base_url: str = ""
     anthropic_base_url: str = ""
 
@@ -109,6 +111,7 @@ def load_settings() -> Settings:
 
     env_map = {
         "OLLAMA_BASE_URL": ("llm", "base_url"),
+        "GROQ_API_KEY": ("llm", "groq_api_key"),
         "LLM_MODEL": ("llm", "model"),
         "REDIS_URL": ("redis_url",),
         "DATABASE_URL": ("database_url",),

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 import time
 from typing import Any, Optional
@@ -52,6 +53,15 @@ class ProviderManager:
             count += 1
         if "gemini" in self._providers:
             self.set_default("gemini")
+        groq_key = getattr(settings.llm, "groq_api_key", "") if settings else os.getenv("GROQ_API_KEY", "")
+        if groq_key:
+            groq = OpenAIProvider(
+                api_key=groq_key,
+                base_url="https://api.groq.com/openai/v1",
+                model=getattr(settings.llm, "groq_model", "openai/gpt-oss-120b") if settings else "openai/gpt-oss-120b"
+            )
+            self.register("groq", groq)
+            count += 1
         logger.info("Registered %d built-in LLM providers", count)
         return count
 
@@ -101,7 +111,7 @@ class ProviderManager:
         return self.get(self._default_provider)
 
     async def _select_cheapest(self) -> LLMProvider:
-        priority = ["ollama", "openai", "gemini", "anthropic"]
+        priority = ["gemini", "groq", "ollama", "openai", "anthropic"]
         for name in priority:
             if name in self._providers:
                 prov = self._providers[name]
@@ -121,7 +131,7 @@ class ProviderManager:
         return best
 
     async def _select_highest_quality(self) -> LLMProvider:
-        priority = ["anthropic", "openai", "gemini", "ollama"]
+        priority = ["anthropic", "openai", "gemini", "groq", "ollama"]
         for name in priority:
             if name in self._providers:
                 prov = self._providers[name]
