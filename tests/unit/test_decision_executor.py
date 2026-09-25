@@ -269,17 +269,36 @@ class TestExecuteTopDecision:
 
     @patch("mindmargin.analytics.channel_brain.run_brain_cycle")
     @patch("mindmargin.analytics.growth_engine.run_growth_analysis")
+    @patch("mindmargin.analytics.memory.get_top_opportunities")
+    @patch("mindmargin.intelligence.scoring.run_opportunity_scoring")
     @patch("mindmargin.agents.decision_executor.execute_pipeline")
+    @patch("mindmargin.agents.decision_executor.publish_video")
+    @patch("mindmargin.agents.decision_executor.save_pipeline_result")
     @patch("mindmargin.agents.decision_executor.log_execution")
-    def test_handles_brain_failure(self, mock_log, mock_pipe, mock_growth, mock_brain):
+    @patch("mindmargin.agents.decision_executor._check_channel_health")
+    @patch("mindmargin.agents.decision_executor._check_daily_publish_cap")
+    def test_handles_brain_failure(self, mock_cap, mock_health, mock_log, mock_save_pr, mock_pub, mock_pipe, mock_scoring, mock_opps, mock_growth, mock_brain):
+        mock_opps.return_value = []
+        mock_health.return_value = (False, "")
+        mock_cap.return_value = (False, "")
         mock_brain.side_effect = ValueError("brain error")
         mock_growth.return_value = {"top_recommendations": ["Growth Topic"]}
-        mock_pipe.return_value = {"status": "completed", "pipeline_id": "g-001"}
+        mock_pipe.return_value = {
+            "status": "completed", "pipeline_id": "g-001", "timing_s": 30.0,
+            "output_dir": "C:\\tmp\\out",
+        }
+        mock_pub.return_value = {"status": "completed", "video_id": "vid_growth", "url": "https://youtu.be/vid_growth"}
 
-        result = execute_top_decision()
+        result = execute_top_decision(quick=False, auto_publish=True)
 
-        assert result["status"] == "skipped"
-        assert result["reason"] == "low_confidence"
+        assert result["status"] == "completed"
+        assert result["selected_topic"] == "Growth Topic"
+        assert result["steps"]["brain"]["status"] == "failed"
+        assert result["steps"]["brain"]["error"] == "brain error"
+        assert result["pipeline_status"] == "completed"
+        assert result["publish_status"] == "completed"
+        assert result["video_id"] == "vid_growth"
+        mock_log.assert_called_once()
 
     @patch("mindmargin.analytics.channel_brain.run_brain_cycle")
     @patch("mindmargin.analytics.growth_engine.run_growth_analysis")
