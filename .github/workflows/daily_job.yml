@@ -72,7 +72,10 @@ jobs:
         uses: actions/cache/restore@v4
         id: cache-db
         with:
-          path: data/mindmargin.db
+          path: |
+            data/mindmargin.db
+            output/*/thumbnails
+            output/*/script/script.json
           key: mindmargin-db-${{ github.run_id }}
           restore-keys: mindmargin-db-
 
@@ -135,7 +138,10 @@ jobs:
         uses: actions/cache/save@v4
         if: always()
         with:
-          path: data/mindmargin.db
+          path: |
+            data/mindmargin.db
+            output/*/thumbnails
+            output/*/script/script.json
           key: mindmargin-db-${{ github.run_id }}
 
       - name: Notify on failure
