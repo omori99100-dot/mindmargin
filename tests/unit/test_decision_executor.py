@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from mindmargin.agents.decision_executor import (
     select_topic, execute_pipeline, publish_video, log_execution,
     execute_top_decision, format_execution_report, reset_circuit_breaker,
+    _is_on_niche,
 )
 from mindmargin.analytics.memory import save_execution_log, get_execution_log
 
@@ -768,3 +769,49 @@ class TestSelectTopicRetryBehavior:
             ]
             result = select_topic({}, {})
             assert result == "Dup Skipped"
+
+
+class TestIsOnNiche:
+    def test_english_topic(self):
+        assert _is_on_niche("Why Nokia Lost the Smartphone War") is True
+
+    def test_hashtag_rejected(self):
+        assert _is_on_niche("Startup Failure #shorts") is False
+
+    def test_arabic_only_rejected(self):
+        assert _is_on_niche("عهد الأصدقاء") is False
+
+    def test_mixed_latin_majority(self):
+        assert _is_on_niche("The Rise and Fall of Enron عهد") is True
+
+    def test_empty_string(self):
+        assert _is_on_niche("") is False
+
+    def test_numbers_symbols_only(self):
+        assert _is_on_niche("2026 !!!") is False
+
+    def test_arabic_brain_growth_returns_english(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log, \
+             patch("mindmargin.agents.decision_executor.get_topic_lineages") as mock_lineages:
+            mock_opps.return_value = []
+            mock_log.return_value = []
+            mock_lineages.return_value = []
+            result = select_topic(
+                {"top_topic": "عهد الأصدقاء"},
+                {"top_recommendations": ["عهد الأصدقاء #انمي", "Why Uber Failed"]},
+            )
+        assert result == "Why Uber Failed"
+
+    def test_growth_recommendations_with_none_entries(self):
+        with patch("mindmargin.analytics.memory.get_top_opportunities") as mock_opps, \
+             patch("mindmargin.analytics.memory.get_execution_log") as mock_log, \
+             patch("mindmargin.agents.decision_executor.get_topic_lineages") as mock_lineages:
+            mock_opps.return_value = []
+            mock_log.return_value = []
+            mock_lineages.return_value = []
+            result = select_topic(
+                {},
+                {"top_recommendations": [None, "", "عهد الأصدقاء #انمي", "Why Uber Failed"]},
+            )
+        assert result == "Why Uber Failed"

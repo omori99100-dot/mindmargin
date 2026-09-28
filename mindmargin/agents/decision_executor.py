@@ -35,6 +35,16 @@ _TOPIC_DOMAINS = [
 ]
 
 
+def _is_on_niche(topic: str) -> bool:
+    if not topic or "#" in topic:
+        return False
+    letters = [c for c in topic if c.isalpha()]
+    if not letters:
+        return False
+    latin = sum(1 for c in letters if c.isascii())
+    return latin / len(letters) >= 0.8
+
+
 def select_topic(brain_report: dict, growth_report: dict, pipeline_id: str = "") -> str:
     """Select and persist the highest-ranked actionable topic decision.
 
@@ -75,29 +85,38 @@ def select_topic(brain_report: dict, growth_report: dict, pipeline_id: str = "")
         candidates = [
             {"option": (opp.get("topic") or "").strip(), "score": opp.get("opportunity_score", 0),
              "confidence": opp.get("confidence", 0), "source": "opportunity_scores"}
-            for opp in opportunities if (opp.get("topic") or "").strip()
+            for opp in opportunities
+            if (opp.get("topic") or "").strip() and _is_on_niche(opp.get("topic") or "")
         ]
         for option in candidates:
             if option["option"].lower() not in published_topics:
                 logger.info("Topic from intelligence: '%s' (score=%.1f)", option["option"], option["score"])
                 return choose(option["option"], "opportunity_scores", "highest scored unpublished opportunity", option.get("confidence", 0))
+        rejected = [opp.get("topic") for opp in opportunities if (opp.get("topic") or "").strip() and not _is_on_niche(opp.get("topic") or "")]
+        for t in rejected:
+            logger.warning("Topic rejected by niche filter: %s", t[:80])
     except Exception as exc:
         logger.warning("Intelligence topic selection failed: %s", exc)
 
     topic = (brain_report.get("top_topic") or "").strip()
-    if topic:
+    if topic and _is_on_niche(topic):
         candidates = [{"option": topic, "score": brain_report.get("topic_score", 0), "source": "channel_brain"}]
         return choose(topic, "channel_brain", "brain top topic fallback", brain_report.get("confidence", 0))
+    elif topic:
+        logger.warning("Topic rejected by niche filter: %s", topic[:80])
 
     top_recs = growth_report.get("top_recommendations") or []
-    if top_recs:
-        topic = (top_recs[0] or "").strip()
-        if topic:
-            candidates = [{"option": item, "score": len(top_recs) - index, "source": "growth_engine"} for index, item in enumerate(top_recs) if item]
-            return choose(topic, "growth_engine", "top growth recommendation fallback")
+    _rec_topic = next((t for t in ((rt or "").strip() for rt in top_recs) if t and _is_on_niche(t)), "")
+    if _rec_topic:
+        candidates = [{"option": item, "score": len(top_recs) - index, "source": "growth_engine"}
+                      for index, item in enumerate(top_recs) if item and _is_on_niche(item)]
+        return choose(_rec_topic, "growth_engine", "top growth recommendation fallback")
+    elif top_recs:
+        logger.warning("Topic rejected by niche filter: %s", (top_recs[0] or "")[:80])
 
     lineages = get_topic_lineages(limit=50)
-    unpublished = [lineage for lineage in lineages if not lineage.get("is_published")]
+    unpublished = [lineage for lineage in lineages
+                   if not lineage.get("is_published") and _is_on_niche(lineage.get("child_topic", ""))]
     if unpublished:
         best = max(unpublished, key=lambda item: item.get("performance_inheritance", 0) or 0)
         topic = (best.get("child_topic") or "").strip()
