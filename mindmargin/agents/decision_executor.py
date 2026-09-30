@@ -17,6 +17,7 @@ from mindmargin.analytics.memory import (
     get_pipeline_history, get_topic_lineages, mark_topic_published,
     get_execution_log, is_successful_publish,
 )
+from mindmargin.core.text_filters import is_on_niche as _is_on_niche
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +34,6 @@ _TOPIC_DOMAINS = [
     "fraud", "class action", "regulatory failure",
     "industry disruption", "cultural phenomenon",
 ]
-
-
-def _is_on_niche(topic: str) -> bool:
-    if not topic or "#" in topic:
-        return False
-    letters = [c for c in topic if c.isalpha()]
-    if not letters:
-        return False
-    latin = sum(1 for c in letters if c.isascii())
-    return latin / len(letters) >= 0.8
 
 
 def select_topic(brain_report: dict, growth_report: dict, pipeline_id: str = "") -> str:

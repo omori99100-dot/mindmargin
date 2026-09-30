@@ -24,6 +24,7 @@ from mindmargin.analytics.memory import (
     update_ab_metrics, set_ab_winner, set_ab_restored,
     get_ab_winner_for_pipeline, get_all_completed_ab_tests,
 )
+from mindmargin.core.text_filters import is_on_niche
 from mindmargin.integrations.youtube import update_video_metadata, _get_authenticated_service
 from mindmargin.intelligence.contracts import ExperimentResult
 from mindmargin.intelligence.instrumentation import record_decision, record_event, record_experiment, record_outcome
@@ -308,6 +309,9 @@ def _feed_winner_back(winner: dict) -> None:
     wt = winner.get("watch_time_s", 0) or 0
 
     if vtype == "title":
+        if not is_on_niche(vvalue):
+            logger.warning(f"AB winner rejected by niche filter, not saved to best_practices: '{vvalue[:60]}'")
+            return
         save_best_practice(
             "ab_title_winner",
             vvalue[:80],
