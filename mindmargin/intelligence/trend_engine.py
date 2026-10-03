@@ -59,15 +59,6 @@ class HistoricalAnniversariesProvider(TrendProvider):
                 "seasonality": 0.0,
                 "confidence": 0.7,
             })
-        if not results:
-            results.append({
-                "topic": f"On This Day: Historical Events {month_day}",
-                "trend_score": 0.5,
-                "competition": 0.4,
-                "novelty": 0.7,
-                "seasonality": 0.0,
-                "confidence": 0.5,
-            })
         return results
 
 
